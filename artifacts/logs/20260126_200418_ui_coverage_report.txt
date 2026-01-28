@@ -1,0 +1,23 @@
+============================================================
+          ARGUS UI COVERAGE SWEEP REPORT
+          Generated: Mon Jan 26 20:04:18 PST 2026
+============================================================
+
+--- DESIGN SYSTEM OVERVIEW ---
+
+NEW UI SYSTEM MARKERS (what migrated files should use):
+  Colors:      neutral-*, accent-*, status-*
+  Typography:  text-ds-caption, text-ds-body, text-ds-title, etc.
+  Spacing:     p-ds-*, gap-ds-*, m-ds-*, etc.
+  Radius:      rounded-ds-sm, rounded-ds-md, rounded-ds-lg
+  Shared:      StatusPill, Spinner, AppLoading, SkeletonRect, etc.
+
+LEGACY UI SIGNALS (what needs migration):
+  Colors:      gray-*, primary-*, blue-*, green-*, red-*, yellow-*
+  Surfaces:    bg-surface, bg-surface-light
+  Direct:      Inline hex colors, arbitrary values
+
+============================================================
+                    PAGES ANALYSIS
+============================================================
+

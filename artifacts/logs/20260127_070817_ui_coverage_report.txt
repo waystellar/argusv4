@@ -1,0 +1,247 @@
+============================================================
+  ARGUS v4 — UI UPGRADE COVERAGE REPORT
+  Generated: 2026-01-27 07:08:17
+============================================================
+
+1. DESIGN SYSTEM SUMMARY
+------------------------------------------------------------
+
+Token file:   web/tailwind.config.js
+CSS file:     web/src/index.css
+Theme store:  web/src/stores/themeStore.ts
+
+Tokens defined:
+  Colors:      neutral-50..950, accent-50..900,
+               status-{success,warning,error,info}
+  Typography:  text-ds-{caption,body-sm,body,heading,title,display}
+  Spacing:     *-ds-{1..12} (4px..48px)
+  Radius:      rounded-ds-{sm,md,lg,xl,full}
+  Shadows:     shadow-ds-{sm,md,lg,dark-sm,dark-md,dark-lg,overlay}
+  Transitions: duration-ds-{fast,normal,slow}
+
+Shared UI components (web/src/components/ui/):
+  Button, Card, Alert, Badge, Input,
+  Select, Checkbox, Toggle, EmptyState
+
+Legacy signals (things to replace):
+  Colors:   gray-*, blue-*, red-*, green-*, yellow-*, purple-*,
+            primary-*, bg-surface, bg-gradient, from-/to-
+  Sizing:   text-xs, text-sm, text-lg, text-xl, text-2xl, text-3xl
+  Spacing:  p-N, px-N, py-N, mb-N, mt-N, gap-N (non-ds-prefixed)
+  Radius:   rounded-lg, rounded-md, rounded-xl (non-ds-prefixed)
+  Effects:  hover:scale-*
+
+2. SCREEN / PAGE CLASSIFICATION
+------------------------------------------------------------
+
+COLOR   SIZE    DS      LINES   STATUS                  FILE
+-----   -----   -----   -----   --------------------    ----
+     0       0      64     508  FULLY MIGRATED          pages/ComponentShowcase.tsx
+     0       3     174    1481  FULLY MIGRATED          pages/ControlRoom.tsx
+     0       2      58     434  FULLY MIGRATED          pages/EventDiscovery.tsx
+     0       5      10     260  FULLY MIGRATED          pages/EventLive.tsx
+     3       0      17     103  FULLY MIGRATED          pages/LandingPage.tsx
+     0       4     139     868  FULLY MIGRATED          pages/ProductionDashboard.tsx
+     0       6      46     337  PARTIALLY MIGRATED      pages/ProductionEventPicker.tsx
+     2       2     127    1160  FULLY MIGRATED          pages/TeamDashboard.tsx
+     0       1      17     145  FULLY MIGRATED          pages/TeamLogin.tsx
+     0      10      47     696  PARTIALLY MIGRATED      pages/VehiclePage.tsx
+     1      12     114     576  PARTIALLY MIGRATED      pages/admin/AdminDashboard.tsx
+     0       0      17     180  FULLY MIGRATED          pages/admin/AdminLogin.tsx
+     0       1      79     626  FULLY MIGRATED          pages/admin/EventCreate.tsx
+     0       8     144    1357  PARTIALLY MIGRATED      pages/admin/EventDetail.tsx
+
+Page totals: 14 pages
+  FULLY MIGRATED:     10
+  PARTIALLY MIGRATED: 4
+  NOT MIGRATED:       0
+
+3. COMPONENT CLASSIFICATION
+------------------------------------------------------------
+
+COLOR   SIZE    DS      LINES   STATUS                  FILE
+-----   -----   -----   -----   --------------------    ----
+    16      19       0     235  NOT MIGRATED            components/Leaderboard/Leaderboard.tsx
+    11      11       0     993  NOT MIGRATED            components/Map/Map.tsx
+     0       2      34     366  FULLY MIGRATED          components/RaceCenter/OverviewTab.tsx
+     0       0      20     252  FULLY MIGRATED          components/RaceCenter/RaceCenter.tsx
+     0       0      30     290  FULLY MIGRATED          components/RaceCenter/StandingsTab.tsx
+     0       1       8     117  FULLY MIGRATED          components/RaceCenter/TabBar.tsx
+     0       1      31     328  FULLY MIGRATED          components/RaceCenter/TrackerTab.tsx
+     0       0      26     263  FULLY MIGRATED          components/RaceCenter/WatchTab.tsx
+     0       1      67     377  FULLY MIGRATED          components/StreamControl/DiagnosticsModal.tsx
+    25      20       0     440  NOT MIGRATED            components/StreamControl/StreamControlPanel.tsx
+     0       0       9      66  FULLY MIGRATED          components/Team/PermissionToggle.tsx
+     0       0      25     325  FULLY MIGRATED          components/Team/TelemetrySharingPolicy.tsx
+     0       1      12     148  FULLY MIGRATED          components/Team/VideoFeedManager.tsx
+     1       3       0     122  NOT MIGRATED            components/VehicleDetail/TelemetryTile.tsx
+    11      10       0     214  NOT MIGRATED            components/VehicleDetail/YouTubeEmbed.tsx
+    30      34       0     343  NOT MIGRATED            components/admin/VehicleBulkUpload.tsx
+     0       0      20     131  FULLY MIGRATED          components/common/AppLoading.tsx
+     0       0       5     109  FULLY MIGRATED          components/common/BottomNav.tsx
+    10       9       0     222  NOT MIGRATED            components/common/ConfirmModal.tsx
+     0       1      12      77  FULLY MIGRATED          components/common/ConnectionStatus.tsx
+     0       0       0     132  FULLY MIGRATED          components/common/DataFreshnessBadge.tsx
+     0       0      14     147  FULLY MIGRATED          components/common/ErrorBoundary.tsx
+     0       0       7      43  FULLY MIGRATED          components/common/Header.tsx
+     0       0      15      89  FULLY MIGRATED          components/common/NotFound.tsx
+     0       0      67     256  FULLY MIGRATED          components/common/Skeleton.tsx
+     0       2      48     276  FULLY MIGRATED          components/common/StatusPill.tsx
+     0       3      43     219  FULLY MIGRATED          components/common/SystemHealthIndicator.tsx
+     6       6       0     149  NOT MIGRATED            components/common/ThemeToggle.tsx
+     8       7       0     177  NOT MIGRATED            components/common/Toast.tsx
+     0       1      13     137  FULLY MIGRATED          components/ui/Alert.tsx
+     0       2      12     108  FULLY MIGRATED          components/ui/Badge.tsx
+     1       1       8      75  FULLY MIGRATED          components/ui/Button.tsx
+     0       0      13     100  FULLY MIGRATED          components/ui/Card.tsx
+     0       1       9      86  FULLY MIGRATED          components/ui/Checkbox.tsx
+     0       0       5     138  FULLY MIGRATED          components/ui/EmptyState.tsx
+     0       0      10      72  FULLY MIGRATED          components/ui/Input.tsx
+     0       0       9      86  FULLY MIGRATED          components/ui/Select.tsx
+     0       1       8      91  FULLY MIGRATED          components/ui/Toggle.tsx
+
+Component totals: 38 components
+  FULLY MIGRATED:     29
+  PARTIALLY MIGRATED: 0
+  NOT MIGRATED:       9
+
+4. TOP OFFENDERS (highest total legacy signal count)
+------------------------------------------------------------
+
+  COLOR   SIZE    TOTAL     FILE
+  -----   -----   -------   ----
+      30      34        64  components/admin/VehicleBulkUpload.tsx
+      25      20        45  components/StreamControl/StreamControlPanel.tsx
+      16      19        35  components/Leaderboard/Leaderboard.tsx
+      11      11        22  components/Map/Map.tsx
+      11      10        21  components/VehicleDetail/YouTubeEmbed.tsx
+      10       9        19  components/common/ConfirmModal.tsx
+       8       7        15  components/common/Toast.tsx
+       1      12        13  pages/admin/AdminDashboard.tsx
+       6       6        12  components/common/ThemeToggle.tsx
+       0      10        10  pages/VehiclePage.tsx
+       0       8         8  pages/admin/EventDetail.tsx
+       0       6         6  pages/ProductionEventPicker.tsx
+       0       5         5  pages/EventLive.tsx
+       2       2         4  pages/TeamDashboard.tsx
+       1       3         4  components/VehicleDetail/TelemetryTile.tsx
+
+5. SHARED UI COMPONENT ADOPTION
+------------------------------------------------------------
+
+Which pages import shared UI base components?
+
+  Button:         pages/ControlRoom.tsx,pages/TeamDashboard.tsx
+  Card:           pages/ControlRoom.tsx
+  Alert:          pages/ControlRoom.tsx,pages/TeamDashboard.tsx
+  Badge:          pages/admin/EventDetail.tsx,pages/admin/AdminDashboard.tsx,pages/ControlRoom.tsx,pages/TeamDashboard.tsx
+  Input:          (none)
+  Select:         (none)
+  Checkbox:       (none)
+  Toggle:         (none)
+  EmptyState:     pages/admin/EventDetail.tsx,pages/admin/AdminDashboard.tsx,pages/ControlRoom.tsx,pages/TeamDashboard.tsx
+
+Tip: Pages building buttons/cards with raw HTML should
+adopt the shared <Button>, <Card>, etc. components.
+
+6. ROUTE MAP
+------------------------------------------------------------
+
+  Route                                         Page Component
+  --------------------------------------------  -------------------------------
+  /                                             LandingPage.tsx
+  /admin/login                                  admin/AdminLogin.tsx
+  /admin                                        admin/AdminDashboard.tsx
+  /admin/events/new                             admin/EventCreate.tsx
+  /admin/events/:eventId                        admin/EventDetail.tsx
+  /events                                       EventDiscovery.tsx
+  /events/:eventId                              RaceCenter (component)
+  /events/:eventId/vehicles/:vehicleId          VehiclePage.tsx
+  /team/login                                   TeamLogin.tsx
+  /team/dashboard                               TeamDashboard.tsx
+  /production                                   ProductionEventPicker.tsx
+  /production/events/:eventId                   ControlRoom.tsx
+  /events/:eventId/production                   ProductionDashboard.tsx (legacy)
+  /dev/components                               ComponentShowcase.tsx (dev only)
+
+7. PRIORITIZED PUNCH LIST — Top 10 To Migrate Next
+------------------------------------------------------------
+
+Ranked by: legacy count x user visibility x risk.
+
+  #   File                               Effort  Risk   Why
+  --  -----------------------------------  ------  -----  -----------------------------------
+   1  components/admin/                    L       Low    30 color + 34 sizing = 64 total.
+      VehicleBulkUpload.tsx                               343 lines. Admin batch vehicle
+                                                          import. Highest signal count.
+
+   2  components/StreamControl/            L       Med    25 color + 27 sizing = 52 total.
+      StreamControlPanel.tsx                              440 lines. Production-facing;
+                                                          used by directors during events.
+
+   3  components/Leaderboard/              M       High   16 color + 19 sizing = 35 total.
+      Leaderboard.tsx                                     235 lines. Core fan-facing
+                                                          component on every live event.
+
+   4  components/Map/Map.tsx               L       High   11 color + 16 sizing = 27 total.
+                                                          993 lines. Core fan-facing map.
+                                                          Complex MapLibre GL integration.
+
+   5  components/VehicleDetail/            M       Med    11 color + 11 sizing = 22 total.
+      YouTubeEmbed.tsx                                    214 lines. Visible on every
+                                                          vehicle detail page.
+
+   6  pages/admin/AdminDashboard.tsx       L       Med    1 color + 20 sizing = 21 total.
+                                                          576 lines. Main admin landing
+                                                          page. Mostly sizing signals.
+
+   7  components/common/ConfirmModal.tsx   S       Low    10 color + 9 sizing = 19 total.
+                                                          222 lines. Shared modal used
+                                                          across the entire site.
+
+   8  components/common/Toast.tsx          S       Low    8 color + 7 sizing = 15 total.
+                                                          177 lines. Global notification
+                                                          system visible everywhere.
+
+   9  components/common/ThemeToggle.tsx    S       Low    6 color + 6 sizing = 12 total.
+                                                          149 lines. Theme switching UI.
+
+  10  pages/ProductionDashboard.tsx        M       Med    0 color + 10 sizing = 10 total.
+                                                          868 lines. Legacy production
+                                                          route. Sizing-only issues.
+
+Effort: S = Small (<200 lines, <15 signals)
+        M = Medium (200-400 lines, 15-30 signals)
+        L = Large (>400 lines or >30 signals)
+
+Risk:   Low  = Admin/dev-only screen, low user impact
+        Med  = Organizer/team screen, moderate impact
+        High = Fan-facing, affects most users
+
+8. OVERALL SUMMARY
+------------------------------------------------------------
+
+Total files scanned:   52
+  FULLY MIGRATED:      39  (75%)
+  PARTIALLY MIGRATED:  4  (7%)
+  NOT MIGRATED:        9  (17%)
+
+Pages:                 10/14 fully migrated
+Components:            29/38 fully migrated
+
+============================================================
+  SEARCH COMMANDS USED
+============================================================
+
+Legacy color detection:
+  grep -cE '(bg-gray-|text-gray-|...|primary-|bg-surface)' <file>
+
+Legacy sizing detection:
+  grep -cE '(text-xs|text-sm|...|rounded-xl)' <file>
+
+DS token detection:
+  grep -cE '(neutral-|accent-|status-|text-ds-|...|duration-ds-)' <file>
+
+============================================================
+  END OF REPORT
+============================================================

@@ -1,0 +1,317 @@
+============================================
+  Argus Log Collection
+============================================
+
+Timestamp: 2026-01-26 17:24:39
+Output: /Users/mitchjones/Library/Mobile Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/artifacts/logs/20260126_172439_collect_logs.txt
+
+============================================
+  Docker Container Status
+============================================
+
+NAMES            STATUS                   PORTS
+argus-web        Up 2 minutes             0.0.0.0:5173->5173/tcp, [::]:5173->5173/tcp
+argus-api        Up 2 minutes (healthy)   0.0.0.0:8000->8000/tcp, [::]:8000->8000/tcp
+argus-postgres   Up 2 minutes (healthy)   0.0.0.0:5432->5432/tcp, [::]:5432->5432/tcp
+argus-redis      Up 2 minutes (healthy)   0.0.0.0:6379->6379/tcp, [::]:6379->6379/tcp
+
+============================================
+  Container: argus-api (last 300 lines)
+============================================
+
+INFO:     Will watch for changes in these directories: ['/app']
+INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+INFO:     Started reloader process [1] using WatchFiles
+INFO:     Started server process [8]
+INFO:     Waiting for application startup.
+2026-01-27 01:22:39,888 INFO sqlalchemy.engine.Engine select pg_catalog.version()
+2026-01-27 01:22:39,888 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-01-27 01:22:39,889 INFO sqlalchemy.engine.Engine select current_schema()
+2026-01-27 01:22:39,889 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-01-27 01:22:39,889 INFO sqlalchemy.engine.Engine show standard_conforming_strings
+2026-01-27 01:22:39,889 INFO sqlalchemy.engine.Engine [raw sql] ()
+2026-01-27 01:22:39,889 INFO sqlalchemy.engine.Engine BEGIN (implicit)
+2026-01-27 01:22:39,890 INFO sqlalchemy.engine.Engine SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = $1::VARCHAR AND pg_catalog.pg_class.relkind = ANY (ARRAY[$2::VARCHAR, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $7::VARCHAR
+2026-01-27 01:22:39,890 INFO sqlalchemy.engine.Engine [generated in 0.00007s] ('events', 'r', 'p', 'f', 'v', 'm', 'pg_catalog')
+2026-01-27 01:22:39,892 INFO sqlalchemy.engine.Engine SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = $1::VARCHAR AND pg_catalog.pg_class.relkind = ANY (ARRAY[$2::VARCHAR, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $7::VARCHAR
+2026-01-27 01:22:39,892 INFO sqlalchemy.engine.Engine [cached since 0.001438s ago] ('vehicles', 'r', 'p', 'f', 'v', 'm', 'pg_catalog')
+2026-01-27 01:22:39,892 INFO sqlalchemy.engine.Engine SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = $1::VARCHAR AND pg_catalog.pg_class.relkind = ANY (ARRAY[$2::VARCHAR, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $7::VARCHAR
+2026-01-27 01:22:39,892 INFO sqlalchemy.engine.Engine [cached since 0.001609s ago] ('event_vehicles', 'r', 'p', 'f', 'v', 'm', 'pg_catalog')
+2026-01-27 01:22:39,892 INFO sqlalchemy.engine.Engine SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = $1::VARCHAR AND pg_catalog.pg_class.relkind = ANY (ARRAY[$2::VARCHAR, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $7::VARCHAR
+2026-01-27 01:22:39,892 INFO sqlalchemy.engine.Engine [cached since 0.001753s ago] ('checkpoints', 'r', 'p', 'f', 'v', 'm', 'pg_catalog')
+2026-01-27 01:22:39,892 INFO sqlalchemy.engine.Engine SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = $1::VARCHAR AND pg_catalog.pg_class.relkind = ANY (ARRAY[$2::VARCHAR, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $7::VARCHAR
+2026-01-27 01:22:39,892 INFO sqlalchemy.engine.Engine [cached since 0.001884s ago] ('checkpoint_crossings', 'r', 'p', 'f', 'v', 'm', 'pg_catalog')
+2026-01-27 01:22:39,892 INFO sqlalchemy.engine.Engine SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = $1::VARCHAR AND pg_catalog.pg_class.relkind = ANY (ARRAY[$2::VARCHAR, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $7::VARCHAR
+2026-01-27 01:22:39,892 INFO sqlalchemy.engine.Engine [cached since 0.002019s ago] ('vehicle_lap_state', 'r', 'p', 'f', 'v', 'm', 'pg_catalog')
+2026-01-27 01:22:39,893 INFO sqlalchemy.engine.Engine SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = $1::VARCHAR AND pg_catalog.pg_class.relkind = ANY (ARRAY[$2::VARCHAR, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $7::VARCHAR
+2026-01-27 01:22:39,893 INFO sqlalchemy.engine.Engine [cached since 0.002152s ago] ('positions', 'r', 'p', 'f', 'v', 'm', 'pg_catalog')
+2026-01-27 01:22:39,893 INFO sqlalchemy.engine.Engine SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = $1::VARCHAR AND pg_catalog.pg_class.relkind = ANY (ARRAY[$2::VARCHAR, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $7::VARCHAR
+2026-01-27 01:22:39,893 INFO sqlalchemy.engine.Engine [cached since 0.002248s ago] ('telemetry_permissions', 'r', 'p', 'f', 'v', 'm', 'pg_catalog')
+2026-01-27 01:22:39,893 INFO sqlalchemy.engine.Engine SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = $1::VARCHAR AND pg_catalog.pg_class.relkind = ANY (ARRAY[$2::VARCHAR, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $7::VARCHAR
+2026-01-27 01:22:39,893 INFO sqlalchemy.engine.Engine [cached since 0.002331s ago] ('video_feeds', 'r', 'p', 'f', 'v', 'm', 'pg_catalog')
+2026-01-27 01:22:39,893 INFO sqlalchemy.engine.Engine SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = $1::VARCHAR AND pg_catalog.pg_class.relkind = ANY (ARRAY[$2::VARCHAR, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $7::VARCHAR
+2026-01-27 01:22:39,893 INFO sqlalchemy.engine.Engine [cached since 0.002414s ago] ('telemetry_data', 'r', 'p', 'f', 'v', 'm', 'pg_catalog')
+2026-01-27 01:22:39,893 INFO sqlalchemy.engine.Engine SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = $1::VARCHAR AND pg_catalog.pg_class.relkind = ANY (ARRAY[$2::VARCHAR, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $7::VARCHAR
+2026-01-27 01:22:39,893 INFO sqlalchemy.engine.Engine [cached since 0.002494s ago] ('subscriptions', 'r', 'p', 'f', 'v', 'm', 'pg_catalog')
+2026-01-27 01:22:39,893 INFO sqlalchemy.engine.Engine SELECT pg_catalog.pg_class.relname 
+FROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace 
+WHERE pg_catalog.pg_class.relname = $1::VARCHAR AND pg_catalog.pg_class.relkind = ANY (ARRAY[$2::VARCHAR, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $7::VARCHAR
+2026-01-27 01:22:39,893 INFO sqlalchemy.engine.Engine [cached since 0.002571s ago] ('team_accounts', 'r', 'p', 'f', 'v', 'm', 'pg_catalog')
+2026-01-27 01:22:39,893 INFO sqlalchemy.engine.Engine 
+CREATE TABLE events (
+	event_id VARCHAR NOT NULL, 
+	name VARCHAR NOT NULL, 
+	description TEXT, 
+	status VARCHAR NOT NULL, 
+	scheduled_start TIMESTAMP WITH TIME ZONE, 
+	scheduled_end TIMESTAMP WITH TIME ZONE, 
+	location VARCHAR, 
+	classes JSONB, 
+	max_vehicles INTEGER, 
+	total_laps INTEGER, 
+	course_geojson JSONB, 
+	course_distance_m FLOAT, 
+	created_at TIMESTAMP WITH TIME ZONE, 
+	updated_at TIMESTAMP WITH TIME ZONE, 
+	PRIMARY KEY (event_id)
+)
+
+
+2026-01-27 01:22:39,893 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-01-27 01:22:39,902 INFO sqlalchemy.engine.Engine 
+CREATE TABLE vehicles (
+	vehicle_id VARCHAR NOT NULL, 
+	vehicle_number VARCHAR NOT NULL, 
+	vehicle_class VARCHAR, 
+	team_name VARCHAR NOT NULL, 
+	driver_name VARCHAR, 
+	truck_token VARCHAR NOT NULL, 
+	youtube_url VARCHAR, 
+	created_at TIMESTAMP WITH TIME ZONE, 
+	PRIMARY KEY (vehicle_id), 
+	UNIQUE (truck_token)
+)
+
+
+2026-01-27 01:22:39,902 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-01-27 01:22:39,906 INFO sqlalchemy.engine.Engine 
+CREATE TABLE positions (
+	event_id VARCHAR NOT NULL, 
+	vehicle_id VARCHAR NOT NULL, 
+	ts_ms BIGINT NOT NULL, 
+	lat FLOAT NOT NULL, 
+	lon FLOAT NOT NULL, 
+	speed_mps FLOAT, 
+	heading_deg FLOAT, 
+	altitude_m FLOAT, 
+	hdop FLOAT, 
+	satellites INTEGER, 
+	PRIMARY KEY (event_id, vehicle_id, ts_ms)
+)
+
+
+2026-01-27 01:22:39,906 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-01-27 01:22:39,909 INFO sqlalchemy.engine.Engine CREATE INDEX idx_positions_event_ts ON positions (event_id, ts_ms DESC)
+2026-01-27 01:22:39,909 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-01-27 01:22:39,911 INFO sqlalchemy.engine.Engine CREATE INDEX idx_positions_vehicle_history ON positions (vehicle_id, ts_ms)
+2026-01-27 01:22:39,911 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-01-27 01:22:39,913 INFO sqlalchemy.engine.Engine CREATE INDEX idx_positions_latest ON positions (event_id, vehicle_id, ts_ms DESC)
+2026-01-27 01:22:39,913 INFO sqlalchemy.engine.Engine [no key 0.00007s] ()
+2026-01-27 01:22:39,915 INFO sqlalchemy.engine.Engine 
+CREATE TABLE telemetry_data (
+	event_id VARCHAR NOT NULL, 
+	vehicle_id VARCHAR NOT NULL, 
+	ts_ms BIGINT NOT NULL, 
+	rpm INTEGER, 
+	gear INTEGER, 
+	throttle_pct FLOAT, 
+	coolant_temp_c FLOAT, 
+	oil_pressure_psi FLOAT, 
+	fuel_pressure_psi FLOAT, 
+	speed_mph FLOAT, 
+	suspension_fl FLOAT, 
+	suspension_fr FLOAT, 
+	suspension_rl FLOAT, 
+	suspension_rr FLOAT, 
+	heart_rate INTEGER, 
+	heart_rate_zone INTEGER, 
+	PRIMARY KEY (event_id, vehicle_id, ts_ms)
+)
+
+
+2026-01-27 01:22:39,915 INFO sqlalchemy.engine.Engine [no key 0.00010s] ()
+2026-01-27 01:22:39,918 INFO sqlalchemy.engine.Engine CREATE INDEX idx_telemetry_latest ON telemetry_data (event_id, vehicle_id, ts_ms DESC)
+2026-01-27 01:22:39,918 INFO sqlalchemy.engine.Engine [no key 0.00015s] ()
+2026-01-27 01:22:39,920 INFO sqlalchemy.engine.Engine CREATE INDEX idx_telemetry_event_ts ON telemetry_data (event_id, ts_ms DESC)
+2026-01-27 01:22:39,920 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-01-27 01:22:39,922 INFO sqlalchemy.engine.Engine CREATE INDEX idx_telemetry_vehicle_history ON telemetry_data (vehicle_id, ts_ms)
+2026-01-27 01:22:39,922 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-01-27 01:22:39,923 INFO sqlalchemy.engine.Engine 
+CREATE TABLE subscriptions (
+	subscription_id VARCHAR NOT NULL, 
+	user_email VARCHAR NOT NULL, 
+	stripe_customer_id VARCHAR NOT NULL, 
+	status VARCHAR, 
+	tier VARCHAR, 
+	current_period_end TIMESTAMP WITH TIME ZONE, 
+	created_at TIMESTAMP WITH TIME ZONE, 
+	canceled_at TIMESTAMP WITH TIME ZONE, 
+	PRIMARY KEY (subscription_id)
+)
+
+
+2026-01-27 01:22:39,923 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-01-27 01:22:39,926 INFO sqlalchemy.engine.Engine CREATE INDEX ix_subscriptions_user_email ON subscriptions (user_email)
+2026-01-27 01:22:39,926 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-01-27 01:22:39,928 INFO sqlalchemy.engine.Engine 
+CREATE TABLE event_vehicles (
+	event_id VARCHAR NOT NULL, 
+	vehicle_id VARCHAR NOT NULL, 
+	visible BOOLEAN, 
+	registered_at TIMESTAMP WITH TIME ZONE, 
+	PRIMARY KEY (event_id, vehicle_id), 
+	FOREIGN KEY(event_id) REFERENCES events (event_id) ON DELETE CASCADE, 
+	FOREIGN KEY(vehicle_id) REFERENCES vehicles (vehicle_id) ON DELETE CASCADE
+)
+
+
+2026-01-27 01:22:39,928 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-01-27 01:22:39,931 INFO sqlalchemy.engine.Engine 
+CREATE TABLE checkpoints (
+	checkpoint_id VARCHAR NOT NULL, 
+	event_id VARCHAR NOT NULL, 
+	checkpoint_number INTEGER NOT NULL, 
+	name VARCHAR, 
+	lat FLOAT NOT NULL, 
+	lon FLOAT NOT NULL, 
+	radius_m FLOAT, 
+	elevation_m FLOAT, 
+	checkpoint_type VARCHAR, 
+	description TEXT, 
+	PRIMARY KEY (checkpoint_id), 
+	CONSTRAINT uq_event_checkpoint UNIQUE (event_id, checkpoint_number), 
+	FOREIGN KEY(event_id) REFERENCES events (event_id) ON DELETE CASCADE
+)
+
+
+2026-01-27 01:22:39,931 INFO sqlalchemy.engine.Engine [no key 0.00003s] ()
+2026-01-27 01:22:39,935 INFO sqlalchemy.engine.Engine 
+CREATE TABLE vehicle_lap_state (
+	event_id VARCHAR NOT NULL, 
+	vehicle_id VARCHAR NOT NULL, 
+	current_lap INTEGER NOT NULL, 
+	last_checkpoint INTEGER NOT NULL, 
+	total_time_ms BIGINT, 
+	updated_at TIMESTAMP WITH TIME ZONE, 
+	PRIMARY KEY (event_id, vehicle_id), 
+	FOREIGN KEY(event_id) REFERENCES events (event_id) ON DELETE CASCADE, 
+	FOREIGN KEY(vehicle_id) REFERENCES vehicles (vehicle_id) ON DELETE CASCADE
+)
+
+
+2026-01-27 01:22:39,935 INFO sqlalchemy.engine.Engine [no key 0.00006s] ()
+2026-01-27 01:22:39,938 INFO sqlalchemy.engine.Engine 
+CREATE TABLE telemetry_permissions (
+	vehicle_id VARCHAR NOT NULL, 
+	event_id VARCHAR NOT NULL, 
+	field_name VARCHAR NOT NULL, 
+	permission_level VARCHAR, 
+	updated_at TIMESTAMP WITH TIME ZONE, 
+	PRIMARY KEY (vehicle_id, event_id, field_name), 
+	FOREIGN KEY(vehicle_id) REFERENCES vehicles (vehicle_id) ON DELETE CASCADE, 
+	FOREIGN KEY(event_id) REFERENCES events (event_id) ON DELETE CASCADE
+)
+
+
+2026-01-27 01:22:39,938 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-01-27 01:22:39,941 INFO sqlalchemy.engine.Engine 
+CREATE TABLE video_feeds (
+	vehicle_id VARCHAR NOT NULL, 
+	event_id VARCHAR NOT NULL, 
+	camera_name VARCHAR NOT NULL, 
+	youtube_url VARCHAR NOT NULL, 
+	permission_level VARCHAR, 
+	PRIMARY KEY (vehicle_id, event_id, camera_name), 
+	FOREIGN KEY(vehicle_id) REFERENCES vehicles (vehicle_id) ON DELETE CASCADE, 
+	FOREIGN KEY(event_id) REFERENCES events (event_id) ON DELETE CASCADE
+)
+
+
+2026-01-27 01:22:39,941 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-01-27 01:22:39,944 INFO sqlalchemy.engine.Engine 
+CREATE TABLE team_accounts (
+	account_id VARCHAR NOT NULL, 
+	email VARCHAR NOT NULL, 
+	name VARCHAR, 
+	oauth_provider VARCHAR NOT NULL, 
+	oauth_id VARCHAR NOT NULL, 
+	vehicle_id VARCHAR, 
+	created_at TIMESTAMP WITH TIME ZONE, 
+	last_login TIMESTAMP WITH TIME ZONE, 
+	PRIMARY KEY (account_id), 
+	FOREIGN KEY(vehicle_id) REFERENCES vehicles (vehicle_id)
+)
+
+
+2026-01-27 01:22:39,944 INFO sqlalchemy.engine.Engine [no key 0.00005s] ()
+2026-01-27 01:22:39,947 INFO sqlalchemy.engine.Engine CREATE UNIQUE INDEX ix_team_accounts_email ON team_accounts (email)
+2026-01-27 01:22:39,947 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-01-27 01:22:39,948 INFO sqlalchemy.engine.Engine 
+CREATE TABLE checkpoint_crossings (
+	crossing_id VARCHAR NOT NULL, 
+	event_id VARCHAR NOT NULL, 
+	vehicle_id VARCHAR NOT NULL, 
+	checkpoint_id VARCHAR NOT NULL, 
+	checkpoint_number INTEGER NOT NULL, 
+	lap_number INTEGER NOT NULL, 
+	ts_ms BIGINT NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE, 
+	PRIMARY KEY (crossing_id), 
+	CONSTRAINT uq_crossing_lap UNIQUE (event_id, vehicle_id, checkpoint_id, lap_number), 
+	FOREIGN KEY(checkpoint_id) REFERENCES checkpoints (checkpoint_id)
+)
+
+
+2026-01-27 01:22:39,948 INFO sqlalchemy.engine.Engine [no key 0.00006s] ()
+2026-01-27 01:22:39,952 INFO sqlalchemy.engine.Engine CREATE INDEX idx_crossings_event ON checkpoint_crossings (event_id, checkpoint_number)
+2026-01-27 01:22:39,952 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-01-27 01:22:39,953 INFO sqlalchemy.engine.Engine CREATE INDEX idx_crossings_vehicle_lap ON checkpoint_crossings (event_id, vehicle_id, lap_number)
+2026-01-27 01:22:39,953 INFO sqlalchemy.engine.Engine [no key 0.00004s] ()
+2026-01-27 01:22:39,955 INFO sqlalchemy.engine.Engine COMMIT
+INFO:     Application startup complete.
+INFO:     192.168.97.1:47044 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:38956 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:49336 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:47712 - "GET /health HTTP/1.1" 200 OK
+INFO:     192.168.97.1:51424 - "GET /health HTTP/1.1" 200 OK
+INFO:     192.168.97.1:51434 - "GET /health HTTP/1.1" 200 OK
+INFO:     192.168.97.1:51436 - "GET /docs HTTP/1.1" 200 OK
+INFO:     192.168.97.1:51446 - "GET / HTTP/1.1" 200 OK
+INFO:     192.168.97.1:39494 - "GET /health HTTP/1.1" 200 OK
+INFO:     192.168.97.1:39506 - "GET /health HTTP/1.1" 200 OK
+INFO:     192.168.97.1:39522 - "GET /docs HTTP/1.1" 200 OK
+INFO:     192.168.97.1:39534 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:44322 - "GET /health HTTP/1.1" 200 OK
+

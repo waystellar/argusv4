@@ -1,0 +1,22 @@
+# Argus Edge Dependencies
+# All licenses: MIT or Apache-2.0 or BSD
+
+# Core - Required for all services
+httpx==0.26.0          # BSD-3-Clause - async HTTP client
+pyzmq==25.1.2          # BSD-3-Clause - ZeroMQ for IPC between services
+aiosqlite==0.19.0      # MIT - async SQLite for offline queue
+aiohttp==3.9.3         # Apache-2.0 - async web server for pit crew dashboard
+
+# GPS Service
+pyserial==3.5          # BSD-3-Clause - serial port access for GPS
+pynmea2==1.19.0        # MIT - NMEA GPS sentence parsing
+
+# CAN Bus Telemetry (optional - install only on truck SBC)
+python-can==4.3.1      # LGPL-3.0 - CAN interface library
+cantools==39.4.5       # MIT - DBC file parsing
+
+# ANT+ Heart Rate (optional)
+openant==1.2.1         # MIT - ANT+ USB dongle support
+
+# Video Streaming (optional - for video_director.py)
+# ffmpeg must be installed via system package manager: apt install ffmpeg

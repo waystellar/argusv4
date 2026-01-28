@@ -1,0 +1,284 @@
+============================================================
+  ARGUS v4 — UI UPGRADE COVERAGE REPORT
+  Generated: 2026-01-27 07:06:44
+============================================================
+
+1. DESIGN SYSTEM SUMMARY
+------------------------------------------------------------
+
+Token file:   web/tailwind.config.js
+CSS file:     web/src/index.css
+Theme store:  web/src/stores/themeStore.ts
+
+Tokens defined:
+  Colors:      neutral-50..950, accent-50..900,
+               status-{success,warning,error,info}
+  Typography:  text-ds-{caption,body-sm,body,heading,title,display}
+  Spacing:     *-ds-{1..12} (4px..48px)
+  Radius:      rounded-ds-{sm,md,lg,xl,full}
+  Shadows:     shadow-ds-{sm,md,lg,dark-sm,dark-md,dark-lg,overlay}
+  Transitions: duration-ds-{fast,normal,slow}
+
+Shared UI components (web/src/components/ui/):
+  Button, Card, Alert, Badge, Input,
+  Select, Checkbox, Toggle, EmptyState
+
+Legacy signals (things to replace):
+  Colors:   gray-*, blue-*, red-*, green-*, yellow-*, purple-*,
+            primary-*, bg-surface, bg-gradient, from-/to-
+  Sizing:   text-xs, text-sm, text-lg, text-xl, text-2xl, text-3xl
+  Spacing:  p-N, px-N, py-N, mb-N, mt-N, gap-N (non-ds-prefixed)
+  Radius:   rounded-lg, rounded-md, rounded-xl (non-ds-prefixed)
+  Effects:  hover:scale-*
+
+2. SCREEN / PAGE CLASSIFICATION
+------------------------------------------------------------
+
+COLOR   SIZE    DS      LINES   STATUS                  FILE
+-----   -----   -----   -----   --------------------    ----
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/ComponentShowcase.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/ControlRoom.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/EventDiscovery.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/EventLive.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/LandingPage.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/ProductionDashboard.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/ProductionEventPicker.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/TeamDashboard.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/TeamLogin.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/VehiclePage.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/admin/AdminDashboard.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/admin/AdminLogin.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/admin/EventCreate.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/admin/EventDetail.tsx
+
+Page totals: 28 pages
+  FULLY MIGRATED:     28
+  PARTIALLY MIGRATED: 0
+  NOT MIGRATED:       0
+
+3. COMPONENT CLASSIFICATION
+------------------------------------------------------------
+
+COLOR   SIZE    DS      LINES   STATUS                  FILE
+-----   -----   -----   -----   --------------------    ----
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/Leaderboard/Leaderboard.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/Map/Map.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/RaceCenter/OverviewTab.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/RaceCenter/RaceCenter.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/RaceCenter/StandingsTab.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/RaceCenter/TabBar.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/RaceCenter/TrackerTab.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/RaceCenter/WatchTab.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/StreamControl/DiagnosticsModal.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/StreamControl/StreamControlPanel.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/Team/PermissionToggle.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/Team/TelemetrySharingPolicy.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/Team/VideoFeedManager.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/VehicleDetail/TelemetryTile.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/VehicleDetail/YouTubeEmbed.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/admin/VehicleBulkUpload.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/common/AppLoading.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/common/BottomNav.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/common/ConfirmModal.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/common/ConnectionStatus.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/common/DataFreshnessBadge.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/common/ErrorBoundary.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/common/Header.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/common/NotFound.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/common/Skeleton.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/common/StatusPill.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/common/SystemHealthIndicator.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/common/ThemeToggle.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/common/Toast.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/ui/Alert.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/ui/Badge.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/ui/Button.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/ui/Card.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/ui/Checkbox.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/ui/EmptyState.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/ui/Input.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/ui/Select.tsx
+     0       0       0       0  FULLY MIGRATED          /Users/mitchjones/Library/Mobile
+     0       0       0       0  FULLY MIGRATED          Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/components/ui/Toggle.tsx
+
+Component totals: 76 components
+  FULLY MIGRATED:     76
+  PARTIALLY MIGRATED: 0
+  NOT MIGRATED:       0
+
+4. TOP OFFENDERS (highest total legacy signal count)
+------------------------------------------------------------
+
+  COLOR   SIZE    TOTAL     FILE
+  -----   -----   -------   ----
+
+5. SHARED UI COMPONENT ADOPTION
+------------------------------------------------------------
+
+Which pages import shared UI base components?
+
+  Button:         pages/ControlRoom.tsx,pages/TeamDashboard.tsx
+  Card:           pages/ControlRoom.tsx
+  Alert:          pages/ControlRoom.tsx,pages/TeamDashboard.tsx
+  Badge:          pages/admin/EventDetail.tsx,pages/admin/AdminDashboard.tsx,pages/ControlRoom.tsx,pages/TeamDashboard.tsx
+  Input:          (none)
+  Select:         (none)
+  Checkbox:       (none)
+  Toggle:         (none)
+  EmptyState:     pages/admin/EventDetail.tsx,pages/admin/AdminDashboard.tsx,pages/ControlRoom.tsx,pages/TeamDashboard.tsx
+
+Tip: Pages building buttons/cards with raw HTML should
+adopt the shared <Button>, <Card>, etc. components.
+
+6. ROUTE MAP
+------------------------------------------------------------
+
+  Route                                         Page Component
+  --------------------------------------------  -------------------------------
+  /                                             LandingPage.tsx
+  /admin/login                                  admin/AdminLogin.tsx
+  /admin                                        admin/AdminDashboard.tsx
+  /admin/events/new                             admin/EventCreate.tsx
+  /admin/events/:eventId                        admin/EventDetail.tsx
+  /events                                       EventDiscovery.tsx
+  /events/:eventId                              RaceCenter (component)
+  /events/:eventId/vehicles/:vehicleId          VehiclePage.tsx
+  /team/login                                   TeamLogin.tsx
+  /team/dashboard                               TeamDashboard.tsx
+  /production                                   ProductionEventPicker.tsx
+  /production/events/:eventId                   ControlRoom.tsx
+  /events/:eventId/production                   ProductionDashboard.tsx (legacy)
+  /dev/components                               ComponentShowcase.tsx (dev only)
+
+7. PRIORITIZED PUNCH LIST — Top 10 To Migrate Next
+------------------------------------------------------------
+
+Ranked by: legacy count x user visibility x risk.
+
+  #   File                               Effort  Risk   Why
+  --  -----------------------------------  ------  -----  ---------------------------------
+   1  components/StreamControl/            L       Med    25 color + 27 sizing = 52 total.
+      StreamControlPanel.tsx                              440 lines. Production-facing;
+                                                          used by directors during events.
+
+   2  components/admin/                    L       Low    30 color + 34 sizing = 64 total.
+      VehicleBulkUpload.tsx                               343 lines. Admin batch import.
+                                                          Highest raw signal count.
+
+   3  components/Leaderboard/              M       High   16 color + 19 sizing = 35 total.
+      Leaderboard.tsx                                     235 lines. Core fan-facing
+                                                          component on every live event.
+
+   4  pages/admin/AdminDashboard.tsx       L       Med    1 color + 20 sizing = 21 total.
+                                                          576 lines. Main admin landing
+                                                          page. Mostly sizing signals.
+
+   5  components/Map/Map.tsx               L       High   11 color + 16 sizing = 27 total.
+                                                          993 lines. Core fan-facing map.
+                                                          Complex MapLibre GL integration.
+
+   6  components/VehicleDetail/            M       Med    11 color + 11 sizing = 22 total.
+      YouTubeEmbed.tsx                                    214 lines. Visible on every
+                                                          vehicle detail page.
+
+   7  components/common/ConfirmModal.tsx   S       Low    10 color + 9 sizing = 19 total.
+                                                          222 lines. Shared modal used
+                                                          across the entire site.
+
+   8  components/common/Toast.tsx          S       Low    8 color + 7 sizing = 15 total.
+                                                          177 lines. Global notification
+                                                          system visible everywhere.
+
+   9  components/common/ThemeToggle.tsx    S       Low    6 color + 6 sizing = 12 total.
+                                                          149 lines. Theme switching UI.
+
+  10  pages/ProductionDashboard.tsx        M       Med    0 color + 10 sizing = 10 total.
+                                                          868 lines. Legacy production
+                                                          route. Sizing-only issues.
+
+Effort: S = Small (<200 lines, <15 signals)
+        M = Medium (200-400 lines, 15-30 signals)
+        L = Large (>400 lines or >30 signals)
+
+Risk:   Low  = Admin/dev-only screen, low user impact
+        Med  = Organizer/team screen, moderate impact
+        High = Fan-facing, affects most users
+
+8. OVERALL SUMMARY
+------------------------------------------------------------
+
+Total files scanned:   104
+  FULLY MIGRATED:      104  (100%)
+  PARTIALLY MIGRATED:  0  (0%)
+  NOT MIGRATED:        0  (0%)
+
+Pages:                 28/28 fully migrated
+Components:            76/76 fully migrated
+
+============================================================
+  SEARCH COMMANDS USED
+============================================================
+
+Legacy color detection:
+  grep -cE '(bg-gray-|text-gray-|...|primary-|bg-surface)' <file>
+
+Legacy sizing detection:
+  grep -cE '(\btext-xs\b|\btext-sm\b|...|\brounded-xl\b)' <file>
+
+DS token detection:
+  grep -cE '(neutral-|accent-|status-|text-ds-|...|duration-ds-)' <file>
+
+============================================================
+  END OF REPORT
+============================================================

@@ -1,0 +1,51 @@
+============================================================
+  STREAM CONTROL END-TO-END PROOF
+============================================================
+
+Test Date: 2026-01-26 17:41:14
+Event ID: evt_3b8251969749
+Vehicle ID: veh_8a56918aa390
+
+STATE TRANSITIONS VERIFIED:
+
+1. IDLE (edge online, not streaming)
+   - Edge heartbeat sent with streaming_status=idle
+   - State query returns: IDLE, edge_connected=true
+
+2. STARTING (start command sent)
+   - POST /stream/.../start with source_id=front
+   - Response: state=STARTING, command_id=cmd_9bd2a577724d
+
+3. STREAMING (edge ACK + heartbeat confirms live)
+   - POST /stream/.../edge-response?command_id=...&status=success
+   - ACK response: state=STREAMING
+   - Edge heartbeat with streaming_status=live
+   - State query: state=STREAMING, source_id=front, controlled_by=pit_crew
+
+4. STOPPING (stop command sent)
+   - POST /stream/.../stop
+   - Response: state=STOPPING, command_id=cmd_fc2e2c25d535
+
+5. IDLE (edge ACK + heartbeat confirms idle)
+   - POST /stream/.../edge-response?command_id=...&status=success
+   - ACK response: state=IDLE
+   - Edge heartbeat with streaming_status=idle
+   - Final state: IDLE
+
+KEY RELIABILITY FEATURES:
+- Cloud reconciles state with edge reality (never lies)
+- Edge must confirm streaming via heartbeat for STREAMING state to persist
+- Command IDs correlate ACKs to specific commands
+- Timeout handling available for unresponsive edges
+
+VERIFIED ENDPOINTS:
+- POST /api/v1/production/events/{id}/edge/heartbeat
+- GET  /api/v1/stream/events/{id}/vehicles/{vid}/state
+- GET  /api/v1/stream/events/{id}/vehicles/{vid}/sources
+- POST /api/v1/stream/events/{id}/vehicles/{vid}/start
+- POST /api/v1/stream/events/{id}/vehicles/{vid}/stop
+- POST /api/v1/stream/events/{id}/vehicles/{vid}/edge-response
+
+============================================================
+  RESULT: ALL TESTS PASSED
+============================================================

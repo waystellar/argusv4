@@ -1,0 +1,167 @@
+============================================================
+          ARGUS UI COVERAGE SWEEP REPORT
+          Generated: Tue Jan 27 04:47:42 PST 2026
+============================================================
+
+--- DESIGN SYSTEM OVERVIEW ---
+
+NEW UI SYSTEM MARKERS (what migrated files should use):
+  Colors:      neutral-*, accent-*, status-*
+  Typography:  text-ds-caption, text-ds-body, text-ds-title, etc.
+  Spacing:     p-ds-*, gap-ds-*, m-ds-*, etc.
+  Radius:      rounded-ds-sm, rounded-ds-md, rounded-ds-lg
+  Shared:      StatusPill, Spinner, AppLoading, SkeletonRect, etc.
+
+LEGACY UI SIGNALS (what needs migration):
+  Colors:      gray-*, primary-*, blue-*, green-*, red-*, yellow-*
+  Surfaces:    bg-surface, bg-surface-light
+  Direct:      Inline hex colors, arbitrary values
+
+============================================================
+                    PAGES ANALYSIS
+============================================================
+
+--- PAGE-BY-PAGE ANALYSIS ---
+
+\033[0;32m[FULLY MIGRATED]\033[0m pages/LandingPage.tsx
+    Legacy: 0 | New: 16
+\033[0;32m[FULLY MIGRATED]\033[0m pages/EventDiscovery.tsx
+    Legacy: 0 | New: 53
+\033[0;31m[NOT MIGRATED]\033[0m pages/EventLive.tsx
+    Legacy: 8 | New: 0
+\033[0;31m[NOT MIGRATED]\033[0m pages/VehiclePage.tsx
+    Legacy: 35 | New: 0
+\033[0;32m[FULLY MIGRATED]\033[0m pages/TeamLogin.tsx
+    Legacy: 0 | New: 15
+\033[1;33m[PARTIALLY MIGRATED]\033[0m pages/TeamDashboard.tsx
+    Legacy: 2 | New: 124
+\033[0;32m[FULLY MIGRATED]\033[0m pages/ProductionEventPicker.tsx
+    Legacy: 0 | New: 44
+\033[0;32m[FULLY MIGRATED]\033[0m pages/ProductionDashboard.tsx
+    Legacy: 0 | New: 137
+\033[0;32m[FULLY MIGRATED]\033[0m pages/ControlRoom.tsx
+    Legacy: 0 | New: 171
+\033[0;32m[FULLY MIGRATED]\033[0m pages/ComponentShowcase.tsx
+    Legacy: 0 | New: 49
+\033[0;31m[NOT MIGRATED]\033[0m pages/admin/AdminLogin.tsx
+    Legacy: 12 | New: 0
+\033[0;32m[FULLY MIGRATED]\033[0m pages/admin/AdminDashboard.tsx
+    Legacy: 0 | New: 110
+\033[0;31m[NOT MIGRATED]\033[0m pages/admin/EventCreate.tsx
+    Legacy: 57 | New: 0
+\033[0;32m[FULLY MIGRATED]\033[0m pages/admin/EventDetail.tsx
+    Legacy: 0 | New: 138
+
+============================================================
+                 KEY COMPONENTS ANALYSIS
+============================================================
+
+\033[0;32m[FULLY MIGRATED]\033[0m components/RaceCenter/
+    Files w/legacy: 0 | Files w/new: 6
+\033[0;31m[NOT MIGRATED]\033[0m components/Leaderboard/
+    Files w/legacy: 1 | Files w/new: 0
+\033[0;31m[NOT MIGRATED]\033[0m components/Map/
+    Files w/legacy: 1 | Files w/new: 0
+\033[0;31m[NOT MIGRATED]\033[0m components/StreamControl/
+    Files w/legacy: 2 | Files w/new: 0
+\033[0;31m[NOT MIGRATED]\033[0m components/VehicleDetail/
+    Files w/legacy: 2 | Files w/new: 0
+\033[0;32m[FULLY MIGRATED]\033[0m components/Team/
+    Files w/legacy: 0 | Files w/new: 3
+\033[0;31m[NOT MIGRATED]\033[0m components/admin/
+    Files w/legacy: 1 | Files w/new: 0
+\033[1;33m[PARTIALLY MIGRATED]\033[0m components/common/
+    Files w/legacy: 5 | Files w/new: 6
+
+============================================================
+                   TOP OFFENDERS
+          (Files with most legacy signals)
+============================================================
+
+  \033[0;31m57\033[0m legacy signals: pages/admin/EventCreate.tsx
+  \033[0;31m48\033[0m legacy signals: components/StreamControl/DiagnosticsModal.tsx
+  \033[0;31m40\033[0m legacy signals: components/common/StatusPill.tsx
+  \033[0;31m37\033[0m legacy signals: components/common/SystemHealthIndicator.tsx
+  \033[0;31m35\033[0m legacy signals: pages/VehiclePage.tsx
+  \033[0;31m30\033[0m legacy signals: components/admin/VehicleBulkUpload.tsx
+  \033[0;31m25\033[0m legacy signals: components/StreamControl/StreamControlPanel.tsx
+  \033[0;31m17\033[0m legacy signals: components/Leaderboard/Leaderboard.tsx
+  \033[0;31m12\033[0m legacy signals: pages/admin/AdminLogin.tsx
+  \033[0;31m11\033[0m legacy signals: components/common/ConnectionStatus.tsx
+  \033[0;31m11\033[0m legacy signals: components/VehicleDetail/YouTubeEmbed.tsx
+  \033[0;31m11\033[0m legacy signals: components/Map/Map.tsx
+  \033[0;31m10\033[0m legacy signals: components/common/ConfirmModal.tsx
+  \033[0;31m8\033[0m legacy signals: pages/EventLive.tsx
+  \033[0;31m8\033[0m legacy signals: components/common/Toast.tsx
+
+============================================================
+                 ROUTE -> PAGE MAPPING
+============================================================
+
+Route                                  | Page Component
+---------------------------------------|--------------------------------
+/                                      | LandingPage.tsx
+/events                                | EventDiscovery.tsx
+/events/:eventId                       | RaceCenter/RaceCenter.tsx
+/events/:eventId/vehicles/:vehicleId   | VehiclePage.tsx
+/team/login                            | TeamLogin.tsx
+/team/dashboard                        | TeamDashboard.tsx
+/production                            | ProductionEventPicker.tsx
+/production/events/:eventId            | ControlRoom.tsx
+/events/:eventId/production            | ProductionDashboard.tsx
+/admin                                 | admin/AdminDashboard.tsx
+/admin/login                           | admin/AdminLogin.tsx
+/admin/events/new                      | admin/EventCreate.tsx
+/admin/events/:eventId                 | admin/EventDetail.tsx
+/dev/components                        | ComponentShowcase.tsx
+*                                      | common/NotFound.tsx
+
+============================================================
+                CLASSIFICATION SUMMARY
+============================================================
+
+\033[0;32mFULLY MIGRATED:\033[0m      9 pages
+\033[1;33mPARTIALLY MIGRATED:\033[0m  1 pages
+\033[0;31mNOT MIGRATED:\033[0m        4 pages
+\033[0;34mMINIMAL (no styles):\033[0m 0 pages
+-----------------------------
+TOTAL PAGES:         14
+
+Migration Progress: 64% fully migrated
+
+============================================================
+        TOP 10 SCREENS TO MIGRATE NEXT
+============================================================
+
+Priority | Screen                    | Effort | Risk   | Why
+---------|---------------------------|--------|--------|----------------------------------
+1        | admin/EventCreate.tsx     | L      | Med    | 57 legacy signals, admin workflow
+2        | VehiclePage.tsx           | L      | Med    | 35 legacy, fan-facing detail view
+3        | admin/AdminLogin.tsx      | S      | Low    | 12 legacy, small file, entry point
+4        | EventLive.tsx             | S      | Low    | 8 legacy, minimal changes needed
+5        | DiagnosticsModal.tsx      | M      | Low    | 48 legacy, isolated modal
+6        | StatusPill.tsx            | M      | Med    | 40 legacy, shared component
+7        | SystemHealthIndicator.tsx | M      | Low    | 37 legacy, admin indicator
+8        | VehicleBulkUpload.tsx     | M      | Med    | 30 legacy, admin workflow
+9        | StreamControlPanel.tsx    | M      | Med    | 25 legacy, team workflow
+10       | Leaderboard.tsx           | M      | Med    | 17 legacy, core fan component
+
+EFFORT KEY:  S = Small (<1 hour)  M = Medium (1-3 hours)  L = Large (>3 hours)
+RISK KEY:    Low = No API changes  Med = UI logic changes  High = Breaking changes
+
+============================================================
+              SEARCH COMMANDS USED
+============================================================
+
+Legacy signal detection:
+  grep -E '(gray-[0-9]+|bg-surface|primary-[0-9]+)' <file>
+
+New token detection:
+  grep -E '(neutral-|accent-|status-|text-ds-|p-ds-)' <file>
+
+Raw color detection:
+  grep -E '(blue-[0-9]+|green-[0-9]+|red-[0-9]+|yellow-[0-9]+)' <file>
+
+============================================================
+Report saved to: /Users/mitchjones/Library/Mobile Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../artifacts/logs/20260127_044742_ui_coverage_report.txt
+============================================================

@@ -1,0 +1,28 @@
+# Argus CAN Bus Interface Setup (oneshot)
+#
+# Brings up the CAN interface with the correct bitrate before
+# argus-can.service starts reading data. Runs once at boot.
+#
+# If no CAN hardware is present, this unit succeeds silently
+# (degraded mode) so the rest of the system boots normally.
+#
+# Created by EDGE-2: Power Loss Resilience — CAN Bringup
+#
+[Unit]
+Description=Argus CAN Bus Interface Setup
+After=network.target sys-subsystem-net-devices-can0.device
+# Don't block boot if CAN hardware is missing
+DefaultDependencies=yes
+ConditionPathExists=/etc/argus/.provisioned
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+EnvironmentFile=/etc/argus/config.env
+# CAN_INTERFACE defaults to can0, CAN_BITRATE defaults to 500000
+ExecStart=/opt/argus/bin/can-setup.sh
+# Allow non-zero exit (hardware missing = degraded, not failed)
+SuccessExitStatus=0 1
+
+[Install]
+WantedBy=multi-user.target

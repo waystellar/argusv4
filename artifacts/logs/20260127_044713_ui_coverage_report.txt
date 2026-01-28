@@ -1,0 +1,52 @@
+============================================================
+          ARGUS UI COVERAGE SWEEP REPORT
+          Generated: Tue Jan 27 04:47:13 PST 2026
+============================================================
+
+--- DESIGN SYSTEM OVERVIEW ---
+
+NEW UI SYSTEM MARKERS (what migrated files should use):
+  Colors:      neutral-*, accent-*, status-*
+  Typography:  text-ds-caption, text-ds-body, text-ds-title, etc.
+  Spacing:     p-ds-*, gap-ds-*, m-ds-*, etc.
+  Radius:      rounded-ds-sm, rounded-ds-md, rounded-ds-lg
+  Shared:      StatusPill, Spinner, AppLoading, SkeletonRect, etc.
+
+LEGACY UI SIGNALS (what needs migration):
+  Colors:      gray-*, primary-*, blue-*, green-*, red-*, yellow-*
+  Surfaces:    bg-surface, bg-surface-light
+  Direct:      Inline hex colors, arbitrary values
+
+============================================================
+                    PAGES ANALYSIS
+============================================================
+
+--- PAGE-BY-PAGE ANALYSIS ---
+
+\033[1;33m[PARTIALLY MIGRATED]\033[0m pages/LandingPage.tsx
+    Legacy: 0
+0 | New: 16
+\033[1;33m[PARTIALLY MIGRATED]\033[0m pages/EventDiscovery.tsx
+    Legacy: 0
+0 | New: 53
+\033[0;31m[NOT MIGRATED]\033[0m pages/EventLive.tsx
+    Legacy: 8 | New: 0
+0
+\033[0;31m[NOT MIGRATED]\033[0m pages/VehiclePage.tsx
+    Legacy: 35 | New: 0
+0
+\033[1;33m[PARTIALLY MIGRATED]\033[0m pages/TeamLogin.tsx
+    Legacy: 0
+0 | New: 15
+\033[1;33m[PARTIALLY MIGRATED]\033[0m pages/TeamDashboard.tsx
+    Legacy: 2 | New: 124
+\033[1;33m[PARTIALLY MIGRATED]\033[0m pages/ProductionEventPicker.tsx
+    Legacy: 0
+0 | New: 44
+\033[1;33m[PARTIALLY MIGRATED]\033[0m pages/ProductionDashboard.tsx
+    Legacy: 0
+0 | New: 137
+\033[1;33m[PARTIALLY MIGRATED]\033[0m pages/ControlRoom.tsx
+    Legacy: 0
+0 | New: 171
+\033[1;33m[PARTIALLY MIGRATED]\033[0m pages/ComponentShowcase.tsx

@@ -1,0 +1,75 @@
+# Argus Timing System v4.0 - Production Deployment
+# Usage: docker-compose -f docker-compose.prod.yml up -d
+#
+# This configuration uses nginx to serve the React frontend and proxy API requests.
+# Access the application at http://<host-ip>
+
+services:
+  # PostgreSQL database
+  postgres:
+    image: postgres:16-alpine
+    container_name: argus-postgres
+    environment:
+      POSTGRES_USER: argus
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-argus}
+      POSTGRES_DB: argus
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U argus"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # Redis for pub/sub and caching
+  redis:
+    image: redis:7-alpine
+    container_name: argus-redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  # FastAPI backend
+  api:
+    build:
+      context: ../cloud
+      dockerfile: Dockerfile
+    container_name: argus-api
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://argus:${DB_PASSWORD:-argus}@postgres:5432/argus
+      - REDIS_URL=redis://redis:6379
+      - CORS_ORIGINS=["http://localhost","http://localhost:80","*"]
+      - DEBUG=false
+      - LOG_LEVEL=INFO
+      - SECRET_KEY=${SECRET_KEY:-change-me-in-production}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # React frontend served via nginx
+  web:
+    build:
+      context: ../web
+      dockerfile: Dockerfile.prod
+      args:
+        - VITE_API_URL=/api/v1
+    container_name: argus-web
+    ports:
+      - "80:80"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+
+networks:
+  default:
+    name: argus-network

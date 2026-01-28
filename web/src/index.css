@@ -1,0 +1,878 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* MapLibre GL CSS */
+@import 'maplibre-gl/dist/maplibre-gl.css';
+
+/* ============================================================
+   THEME SYSTEM - CSS Variables
+   Dark mode (default) and Sunlight mode (high contrast outdoor)
+   ============================================================ */
+
+:root,
+.theme-dark {
+  /* Background colors */
+  --color-bg-base: #1a1a2e;
+  --color-bg-surface: #25253d;
+  --color-bg-surface-light: #30304d;
+  --color-bg-surface-lighter: #3a3a5d;
+
+  /* Text colors */
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #a0a0b0;
+  --color-text-muted: #6b6b7b;
+
+  /* Border colors */
+  --color-border: #4a4a6a;
+  --color-border-light: #3a3a5a;
+
+  /* Scrollbar */
+  --color-scrollbar: #4a4a6a;
+  --color-scrollbar-hover: #5a5a7a;
+
+  /* Contrast adjustments */
+  --contrast-multiplier: 1;
+  --text-shadow: none;
+  --font-weight-boost: 0;
+}
+
+.theme-sunlight {
+  /* Sunlight mode: High contrast for outdoor visibility */
+  /* Lighter backgrounds with higher contrast text */
+  --color-bg-base: #2a2a4e;
+  --color-bg-surface: #35355d;
+  --color-bg-surface-light: #40406d;
+  --color-bg-surface-lighter: #4a4a7d;
+
+  /* Higher contrast text */
+  --color-text-primary: #ffffff;
+  --color-text-secondary: #d0d0e0;
+  --color-text-muted: #a0a0c0;
+
+  /* More visible borders */
+  --color-border: #6a6a9a;
+  --color-border-light: #5a5a8a;
+
+  /* Scrollbar */
+  --color-scrollbar: #6a6a9a;
+  --color-scrollbar-hover: #7a7aaa;
+
+  /* Increased contrast */
+  --contrast-multiplier: 1.2;
+  --text-shadow: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --font-weight-boost: 100;
+}
+
+/* Apply sunlight mode font weight boost */
+.theme-sunlight {
+  font-weight: calc(400 + var(--font-weight-boost));
+}
+
+.theme-sunlight .telemetry-value,
+.theme-sunlight .leaderboard-delta {
+  text-shadow: var(--text-shadow);
+}
+
+/* Use CSS variables for scrollbar */
+::-webkit-scrollbar-thumb {
+  background: var(--color-scrollbar);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-scrollbar-hover);
+}
+
+/* Base styles */
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  /* Note: overflow is NOT set here to allow page scrolling.
+     Pages that need fixed viewport (like fan map view) should add
+     overflow-hidden class to their root element */
+}
+
+/* For pages that need a fixed viewport (no scrolling) */
+.viewport-fixed {
+  overflow: hidden;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Safe area padding for notched phones */
+.safe-area-top {
+  padding-top: env(safe-area-inset-top);
+}
+
+.safe-area-bottom {
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--color-scrollbar, #4a4a6a);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-scrollbar-hover, #5a5a7a);
+}
+
+/* Vehicle marker pulse animation */
+@keyframes pulse {
+  0% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  50% {
+    transform: scale(1.5);
+    opacity: 0.5;
+  }
+  100% {
+    transform: scale(2);
+    opacity: 0;
+  }
+}
+
+.marker-pulse {
+  animation: pulse 2s infinite;
+}
+
+/* ============================================================
+   HIGH CONTRAST "DESERT MODE" STYLES
+   Optimized for outdoor visibility in bright sunlight
+   ============================================================ */
+
+/* Telemetry tile - HIGH CONTRAST for outdoor/sunlight visibility */
+.telemetry-tile {
+  @apply bg-surface-light rounded-lg p-4 flex flex-col relative;
+  @apply border border-white/10;
+  backdrop-filter: blur(8px);
+}
+
+.telemetry-label {
+  /* FIXED: Increased contrast from text-gray-400 to text-gray-200 */
+  @apply text-xs text-gray-200 uppercase tracking-wider font-semibold mb-1;
+}
+
+.telemetry-value {
+  /* FIXED: Increased from text-2xl to text-4xl for bouncing truck visibility */
+  @apply text-4xl font-black font-mono tabular-nums text-white;
+}
+
+/* Smaller telemetry for secondary stats */
+.telemetry-tile-small .telemetry-value {
+  @apply text-2xl;
+}
+
+/* Color coding for telemetry values - threshold based */
+.telemetry-value-normal {
+  @apply text-white;
+}
+
+.telemetry-value-warning {
+  @apply text-yellow-400;
+}
+
+.telemetry-value-danger {
+  @apply text-red-500;
+  animation: blink 1s infinite;
+}
+
+.telemetry-value-good {
+  @apply text-green-400;
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.7; }
+}
+
+/* Stale data indicator - dims tile when data is old (>5s) */
+.telemetry-tile-stale {
+  @apply opacity-40;
+  filter: grayscale(0.5);
+}
+
+.telemetry-tile-stale::before {
+  content: '';
+  @apply absolute inset-0 bg-red-900/20 rounded-lg pointer-events-none;
+}
+
+.stale-indicator {
+  @apply absolute top-1 right-1 px-1.5 py-0.5 text-[9px] bg-red-600 text-white rounded font-bold tracking-wider;
+}
+
+/* Connection status indicator */
+.status-connected {
+  @apply bg-green-500;
+}
+
+.status-disconnected {
+  @apply bg-red-500 animate-pulse;
+}
+
+/* ============================================================
+   MAP INTERACTION CONTROLS
+   Prevents scroll trapping on mobile
+   ============================================================ */
+
+.map-container {
+  @apply relative touch-pan-y;
+}
+
+.map-lock-overlay {
+  @apply absolute inset-0 z-10 flex items-center justify-center;
+  @apply bg-black/30 backdrop-blur-sm;
+  @apply opacity-0 pointer-events-none transition-opacity;
+}
+
+.map-locked .map-lock-overlay {
+  @apply opacity-100 pointer-events-auto;
+}
+
+.map-lock-button {
+  @apply absolute bottom-3 right-3 z-20;
+  @apply px-3 py-2 rounded-lg;
+  @apply bg-black/70 text-white text-sm font-medium;
+  @apply border border-white/20;
+  @apply flex items-center gap-2;
+  @apply transition-all active:scale-95;
+}
+
+.map-lock-button-locked {
+  @apply bg-primary-600 border-primary-400;
+}
+
+/* MapLibre attribution control - minimize size */
+.maplibregl-ctrl-attrib {
+  @apply text-[10px] bg-black/50 text-white/70 px-1.5 py-0.5 rounded-tl;
+}
+
+.maplibregl-ctrl-attrib.maplibregl-compact {
+  min-height: 18px;
+  padding: 2px 20px 2px 4px;
+}
+
+.maplibregl-ctrl-attrib a {
+  @apply text-white/80 no-underline;
+}
+
+.maplibregl-ctrl-attrib-button {
+  @apply bg-black/50;
+}
+
+/* ============================================================
+   MOBILE-OPTIMIZED LEADERBOARD
+   Improved information density for small screens
+   ============================================================ */
+
+/* Gap/Delta display - monospace for easy scanning */
+.leaderboard-delta {
+  @apply font-mono text-base font-bold tabular-nums;
+  min-width: 5ch;
+  text-align: right;
+}
+
+.leaderboard-delta-leader {
+  @apply text-primary-400;
+}
+
+/* Mobile: Hide team name, focus on key stats */
+@media (max-width: 640px) {
+  .leaderboard-team-name {
+    @apply hidden;
+  }
+
+  .leaderboard-row {
+    @apply py-3;
+  }
+
+  .leaderboard-position {
+    @apply w-10 h-10 text-base;
+  }
+
+  .leaderboard-vehicle-number {
+    @apply text-lg;
+  }
+}
+
+/* ============================================================
+   BOTTOM NAVIGATION SAFE AREA
+   Accounts for fixed nav bar height
+   ============================================================ */
+
+@media (max-width: 768px) {
+  .has-bottom-nav {
+    padding-bottom: calc(60px + env(safe-area-inset-bottom));
+  }
+}
+
+/* Glassmorphism for overlays */
+.glass {
+  @apply bg-gray-900/80 backdrop-blur-md border border-white/10;
+}
+
+.glass-light {
+  @apply bg-gray-800/60 backdrop-blur-sm border border-white/5;
+}
+
+/* Skeleton loading state */
+.skeleton {
+  @apply animate-pulse bg-gray-700 rounded;
+}
+
+.skeleton-text {
+  @apply h-4 skeleton;
+}
+
+.skeleton-title {
+  @apply h-6 skeleton;
+}
+
+.skeleton-value {
+  @apply h-10 w-24 skeleton;
+}
+
+/* ============================================================
+   SAFE TOUCH TARGETS
+   Minimum 44x44px for accessibility (Apple HIG, WCAG 2.5.5)
+   ============================================================ */
+
+/* Base touch target class - ensures minimum 44x44px */
+.touch-target {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/* Touch target for buttons with text */
+.touch-target-inline {
+  min-height: 44px;
+  padding-left: 16px;
+  padding-right: 16px;
+}
+
+/* Touch target for icon-only buttons */
+.touch-target-icon {
+  min-width: 44px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Touch target for list items */
+.touch-target-row {
+  min-height: 48px;
+  padding-top: 8px;
+  padding-bottom: 8px;
+}
+
+/* Larger touch target for primary actions (48x48px) */
+.touch-target-lg {
+  min-width: 48px;
+  min-height: 48px;
+}
+
+/* Form input touch targets */
+.touch-input {
+  min-height: 44px;
+  padding: 10px 12px;
+}
+
+/* Make tap area larger than visible element */
+.touch-expand {
+  position: relative;
+}
+
+.touch-expand::before {
+  content: '';
+  position: absolute;
+  top: -8px;
+  right: -8px;
+  bottom: -8px;
+  left: -8px;
+}
+
+/* Clickable card with proper touch target */
+.touch-card {
+  @apply touch-target-row cursor-pointer;
+  @apply transition-colors;
+}
+
+.touch-card:active {
+  @apply bg-white/5;
+}
+
+/* ============================================================
+   CONTROL ROOM ANIMATIONS
+   ============================================================ */
+
+/* Fade in animation for switch confirmation toast */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateX(-50%) translateY(-20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-out forwards;
+}
+
+/* ============================================================
+   DESIGN SYSTEM FOUNDATION
+   Argus v4 - Calm, neutral, modern UI tokens
+   ============================================================ */
+
+/* ------------------------------------------------------------
+   DESIGN SYSTEM CSS VARIABLES
+   These are the source of truth for colors.
+   Use these variables in components for consistency.
+   ------------------------------------------------------------ */
+
+:root {
+  /* Neutral palette - true grays */
+  --ds-neutral-50:  #fafafa;
+  --ds-neutral-100: #f5f5f5;
+  --ds-neutral-150: #ededed;
+  --ds-neutral-200: #e5e5e5;
+  --ds-neutral-300: #d4d4d4;
+  --ds-neutral-400: #a3a3a3;
+  --ds-neutral-500: #737373;
+  --ds-neutral-600: #525252;
+  --ds-neutral-700: #404040;
+  --ds-neutral-750: #363636;
+  --ds-neutral-800: #262626;
+  --ds-neutral-850: #1f1f1f;
+  --ds-neutral-900: #171717;
+  --ds-neutral-950: #0a0a0a;
+
+  /* Accent palette - calm blue for primary actions */
+  --ds-accent-50:  #eff6ff;
+  --ds-accent-100: #dbeafe;
+  --ds-accent-200: #bfdbfe;
+  --ds-accent-300: #93c5fd;
+  --ds-accent-400: #60a5fa;
+  --ds-accent-500: #3b82f6;
+  --ds-accent-600: #2563eb;
+  --ds-accent-700: #1d4ed8;
+  --ds-accent-800: #1e40af;
+  --ds-accent-900: #1e3a8a;
+
+  /* Semantic status */
+  --ds-status-success: #22c55e;
+  --ds-status-warning: #f59e0b;
+  --ds-status-error:   #ef4444;
+  --ds-status-info:    #3b82f6;
+
+  /* Surface tokens (semantic) */
+  --ds-bg-base:      var(--ds-neutral-900);
+  --ds-bg-surface:   var(--ds-neutral-850);
+  --ds-bg-elevated:  var(--ds-neutral-800);
+  --ds-bg-overlay:   rgba(0, 0, 0, 0.6);
+
+  /* Text tokens */
+  --ds-text-primary:   var(--ds-neutral-50);
+  --ds-text-secondary: var(--ds-neutral-400);
+  --ds-text-muted:     var(--ds-neutral-500);
+  --ds-text-disabled:  var(--ds-neutral-600);
+
+  /* Border tokens */
+  --ds-border-subtle:  var(--ds-neutral-800);
+  --ds-border-default: var(--ds-neutral-700);
+  --ds-border-strong:  var(--ds-neutral-600);
+
+  /* Focus ring */
+  --ds-focus-ring-color: var(--ds-accent-500);
+  --ds-focus-ring-width: 2px;
+  --ds-focus-ring-offset: 2px;
+
+  /* Spacing scale */
+  --ds-space-1:  4px;
+  --ds-space-2:  8px;
+  --ds-space-3:  12px;
+  --ds-space-4:  16px;
+  --ds-space-6:  24px;
+  --ds-space-8:  32px;
+  --ds-space-12: 48px;
+
+  /* Border radius */
+  --ds-radius-sm: 4px;
+  --ds-radius-md: 8px;
+  --ds-radius-lg: 12px;
+  --ds-radius-xl: 16px;
+  --ds-radius-full: 9999px;
+
+  /* Layout */
+  --ds-max-content: 1200px;
+  --ds-max-narrow:  640px;
+  --ds-max-wide:    1400px;
+  --ds-gutter:      var(--ds-space-4);
+
+  /* Transitions */
+  --ds-transition-fast:   100ms;
+  --ds-transition-normal: 200ms;
+  --ds-transition-slow:   300ms;
+}
+
+/* ------------------------------------------------------------
+   GLOBAL LAYOUT RULES
+   Page containers, gutters, section spacing
+   ------------------------------------------------------------ */
+
+/* Page container - max width with gutters */
+.ds-container {
+  width: 100%;
+  max-width: var(--ds-max-content);
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: var(--ds-gutter);
+  padding-right: var(--ds-gutter);
+}
+
+.ds-container-narrow {
+  max-width: var(--ds-max-narrow);
+}
+
+.ds-container-wide {
+  max-width: var(--ds-max-wide);
+}
+
+/* Section spacing */
+.ds-section {
+  padding-top: var(--ds-space-8);
+  padding-bottom: var(--ds-space-8);
+}
+
+.ds-section-sm {
+  padding-top: var(--ds-space-6);
+  padding-bottom: var(--ds-space-6);
+}
+
+/* Stack spacing (vertical) */
+.ds-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--ds-space-4);
+}
+
+.ds-stack-sm {
+  gap: var(--ds-space-2);
+}
+
+.ds-stack-lg {
+  gap: var(--ds-space-6);
+}
+
+/* Inline spacing (horizontal) */
+.ds-inline {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: var(--ds-space-3);
+}
+
+.ds-inline-sm {
+  gap: var(--ds-space-2);
+}
+
+.ds-inline-lg {
+  gap: var(--ds-space-4);
+}
+
+/* ------------------------------------------------------------
+   FOCUS RING
+   Visible, consistent focus for accessibility
+   ------------------------------------------------------------ */
+
+/* Default focus ring - use focus-visible for keyboard only */
+.ds-focus-ring:focus-visible,
+*:focus-visible {
+  outline: var(--ds-focus-ring-width) solid var(--ds-focus-ring-color);
+  outline-offset: var(--ds-focus-ring-offset);
+}
+
+/* Remove default outline for mouse users */
+*:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* Alternative: ring inside element (for dark backgrounds) */
+.ds-focus-ring-inset:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 var(--ds-focus-ring-width) var(--ds-focus-ring-color);
+}
+
+/* ------------------------------------------------------------
+   CARD FOUNDATION
+   Consistent card/panel styling
+   ------------------------------------------------------------ */
+
+.ds-card {
+  background-color: var(--ds-bg-surface);
+  border: 1px solid var(--ds-border-subtle);
+  border-radius: var(--ds-radius-lg);
+  padding: var(--ds-space-4);
+}
+
+.ds-card-elevated {
+  background-color: var(--ds-bg-elevated);
+  border: 1px solid var(--ds-border-subtle);
+  border-radius: var(--ds-radius-lg);
+  padding: var(--ds-space-4);
+  box-shadow: 0 2px 4px -1px rgb(0 0 0 / 0.3), 0 1px 2px -1px rgb(0 0 0 / 0.2);
+}
+
+.ds-card-interactive {
+  transition: background-color var(--ds-transition-fast) ease,
+              border-color var(--ds-transition-fast) ease;
+  cursor: pointer;
+}
+
+.ds-card-interactive:hover {
+  background-color: var(--ds-bg-elevated);
+  border-color: var(--ds-border-default);
+}
+
+/* ------------------------------------------------------------
+   BUTTON FOUNDATION
+   Base button styles (variants defined in components)
+   ------------------------------------------------------------ */
+
+.ds-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--ds-space-2);
+  padding: var(--ds-space-2) var(--ds-space-4);
+  min-height: 44px;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  border-radius: var(--ds-radius-md);
+  border: 1px solid transparent;
+  cursor: pointer;
+  transition: background-color var(--ds-transition-fast) ease,
+              border-color var(--ds-transition-fast) ease,
+              color var(--ds-transition-fast) ease;
+  text-decoration: none;
+}
+
+.ds-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+/* Primary button */
+.ds-btn-primary {
+  background-color: var(--ds-accent-600);
+  color: white;
+}
+
+.ds-btn-primary:hover:not(:disabled) {
+  background-color: var(--ds-accent-700);
+}
+
+/* Secondary button (ghost) */
+.ds-btn-secondary {
+  background-color: transparent;
+  color: var(--ds-text-primary);
+  border-color: var(--ds-border-default);
+}
+
+.ds-btn-secondary:hover:not(:disabled) {
+  background-color: var(--ds-bg-elevated);
+  border-color: var(--ds-border-strong);
+}
+
+/* Danger button */
+.ds-btn-danger {
+  background-color: var(--ds-status-error);
+  color: white;
+}
+
+.ds-btn-danger:hover:not(:disabled) {
+  background-color: #dc2626;
+}
+
+/* Button sizes */
+.ds-btn-sm {
+  padding: var(--ds-space-1) var(--ds-space-3);
+  min-height: 36px;
+  font-size: 0.813rem;
+}
+
+.ds-btn-lg {
+  padding: var(--ds-space-3) var(--ds-space-6);
+  min-height: 52px;
+  font-size: 1rem;
+}
+
+/* ------------------------------------------------------------
+   INPUT FOUNDATION
+   Base input styles
+   ------------------------------------------------------------ */
+
+.ds-input {
+  display: block;
+  width: 100%;
+  padding: var(--ds-space-2) var(--ds-space-3);
+  min-height: 44px;
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  color: var(--ds-text-primary);
+  background-color: var(--ds-bg-surface);
+  border: 1px solid var(--ds-border-default);
+  border-radius: var(--ds-radius-md);
+  transition: border-color var(--ds-transition-fast) ease,
+              box-shadow var(--ds-transition-fast) ease;
+}
+
+.ds-input::placeholder {
+  color: var(--ds-text-muted);
+}
+
+.ds-input:hover:not(:disabled) {
+  border-color: var(--ds-border-strong);
+}
+
+.ds-input:focus {
+  outline: none;
+  border-color: var(--ds-accent-500);
+  box-shadow: 0 0 0 1px var(--ds-accent-500);
+}
+
+.ds-input:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* ------------------------------------------------------------
+   TYPOGRAPHY UTILITIES
+   Semantic text styles
+   ------------------------------------------------------------ */
+
+.ds-text-display {
+  font-size: 2rem;
+  line-height: 2.5rem;
+  font-weight: 700;
+  color: var(--ds-text-primary);
+}
+
+.ds-text-title {
+  font-size: 1.5rem;
+  line-height: 2rem;
+  font-weight: 700;
+  color: var(--ds-text-primary);
+}
+
+.ds-text-heading {
+  font-size: 1.125rem;
+  line-height: 1.5rem;
+  font-weight: 600;
+  color: var(--ds-text-primary);
+}
+
+.ds-text-body {
+  font-size: 1rem;
+  line-height: 1.5rem;
+  color: var(--ds-text-primary);
+}
+
+.ds-text-body-sm {
+  font-size: 0.875rem;
+  line-height: 1.25rem;
+  color: var(--ds-text-secondary);
+}
+
+.ds-text-caption {
+  font-size: 0.75rem;
+  line-height: 1rem;
+  letter-spacing: 0.01em;
+  color: var(--ds-text-muted);
+}
+
+.ds-text-label {
+  font-size: 0.75rem;
+  line-height: 1rem;
+  font-weight: 500;
+  letter-spacing: 0.025em;
+  text-transform: uppercase;
+  color: var(--ds-text-muted);
+}
+
+/* ------------------------------------------------------------
+   STATUS BADGE FOUNDATION
+   ------------------------------------------------------------ */
+
+.ds-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ds-space-1);
+  padding: 2px var(--ds-space-2);
+  font-size: 0.75rem;
+  font-weight: 500;
+  line-height: 1rem;
+  border-radius: var(--ds-radius-sm);
+}
+
+.ds-badge-success {
+  background-color: rgba(34, 197, 94, 0.15);
+  color: #4ade80;
+}
+
+.ds-badge-warning {
+  background-color: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+}
+
+.ds-badge-error {
+  background-color: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+}
+
+.ds-badge-info {
+  background-color: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+}
+
+.ds-badge-neutral {
+  background-color: var(--ds-bg-elevated);
+  color: var(--ds-text-secondary);
+}
+
+/* Dot indicator for badges */
+.ds-badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--ds-radius-full);
+  background-color: currentColor;
+}
+
+.ds-badge-dot-pulse {
+  animation: ds-pulse 2s infinite;
+}
+
+@keyframes ds-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}

@@ -1,0 +1,36 @@
+# Argus Timing System - Production Configuration
+# Copy to prod.tfvars and fill in values
+
+# General
+project_name = "argus"
+environment  = "prod"
+aws_region   = "us-west-2"
+domain_name  = "administrativeresults.com"
+
+# Database (CHANGE THESE!)
+db_name     = "argus"
+db_username = "argus"
+db_password = "CHANGE_ME_STRONG_PASSWORD_HERE"
+
+# Security (CHANGE THIS!)
+secret_key = "CHANGE_ME_GENERATE_WITH_openssl_rand_hex_32"
+
+# SSL Certificate (required for prod)
+# Create in ACM before running terraform
+acm_certificate_arn = "arn:aws:acm:us-east-1:ACCOUNT:certificate/CERT_ID"
+
+# RDS - Production sizing
+rds_instance_class    = "db.t3.small"
+rds_allocated_storage = 50
+rds_max_storage       = 200
+
+# Redis - Production sizing
+redis_node_type = "cache.t3.small"
+
+# ECS - Production sizing
+ecs_cpu           = 1024
+ecs_memory        = 2048
+ecs_desired_count = 2
+ecs_min_count     = 2
+ecs_max_count     = 20
+gunicorn_workers  = 4

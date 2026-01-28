@@ -1,0 +1,53 @@
+# Argus Timing System v4.0 - Cloud Service Dependencies
+# All licenses: MIT or Apache-2.0 or BSD (permissive)
+
+# Web Framework
+fastapi==0.109.2          # MIT - async web framework
+uvicorn[standard]==0.27.1 # BSD-3-Clause - ASGI server
+gunicorn==21.2.0          # MIT - WSGI/process manager
+python-multipart==0.0.9   # Apache-2.0 - form data/file uploads for FastAPI
+
+# Database
+asyncpg==0.29.0           # Apache-2.0 - async PostgreSQL driver
+sqlalchemy[asyncio]==2.0.25  # MIT - ORM
+alembic==1.13.1           # MIT - migrations
+
+# Redis
+redis[hiredis]==5.0.1     # MIT - Redis client with C parser
+
+# SSE
+sse-starlette==2.0.0      # BSD-3-Clause - SSE support for Starlette/FastAPI
+
+# Auth
+pyjwt[crypto]==2.8.0      # MIT - JWT tokens
+passlib[bcrypt]==1.7.4    # BSD - password hashing (high-level)
+bcrypt==4.1.2             # Apache-2.0 - bcrypt password hashing (direct)
+
+# Rate Limiting
+slowapi==0.1.9            # MIT - rate limiting for FastAPI
+
+# Payments
+stripe==7.0.0             # MIT - Stripe payment processing
+
+# OAuth
+authlib==1.3.0            # BSD - OAuth 2.0 / OpenID Connect client
+itsdangerous==2.1.2       # BSD - Secure cookie signing
+
+# Validation & Serialization
+pydantic==2.6.1           # MIT - data validation
+pydantic-settings==2.1.0  # MIT - settings management
+email-validator==2.1.0    # BSD - email validation for pydantic EmailStr
+
+# GPX Parsing
+gpxpy==1.6.2              # Apache-2.0 - GPX file parser
+
+# Observability
+structlog==24.1.0         # Apache-2.0 or MIT - structured logging
+prometheus-fastapi-instrumentator==6.1.0  # ISC - Prometheus metrics
+
+# HTTP Client (for health checks)
+httpx==0.26.0             # BSD-3-Clause - async HTTP client
+
+# Development
+pytest==7.4.4             # MIT - testing (must be <8 for pytest-asyncio compatibility)
+pytest-asyncio==0.23.4    # Apache-2.0 - async test support

@@ -1,0 +1,197 @@
+============================================================
+          ARGUS UI COVERAGE SWEEP REPORT
+          Generated: Mon Jan 26 20:05:16 PST 2026
+============================================================
+
+--- DESIGN SYSTEM OVERVIEW ---
+
+NEW UI SYSTEM MARKERS (what migrated files should use):
+  Colors:      neutral-*, accent-*, status-*
+  Typography:  text-ds-caption, text-ds-body, text-ds-title, etc.
+  Spacing:     p-ds-*, gap-ds-*, m-ds-*, etc.
+  Radius:      rounded-ds-sm, rounded-ds-md, rounded-ds-lg
+  Shared:      StatusPill, Spinner, AppLoading, SkeletonRect, etc.
+
+LEGACY UI SIGNALS (what needs migration):
+  Colors:      gray-*, primary-*, blue-*, green-*, red-*, yellow-*
+  Surfaces:    bg-surface, bg-surface-light
+  Direct:      Inline hex colors, arbitrary values
+
+============================================================
+                    PAGES ANALYSIS
+============================================================
+
+--- PAGE-BY-PAGE ANALYSIS ---
+
+\033[0;34m[MINIMAL]\033[0m /Users/mitchjones/Library/Mobile
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/ComponentShowcase.tsx
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m /Users/mitchjones/Library/Mobile
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/ControlRoom.tsx
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m /Users/mitchjones/Library/Mobile
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/EventDiscovery.tsx
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m /Users/mitchjones/Library/Mobile
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/EventLive.tsx
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m /Users/mitchjones/Library/Mobile
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/LandingPage.tsx
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m /Users/mitchjones/Library/Mobile
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/ProductionDashboard.tsx
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m /Users/mitchjones/Library/Mobile
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/ProductionEventPicker.tsx
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m /Users/mitchjones/Library/Mobile
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/TeamDashboard.tsx
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m /Users/mitchjones/Library/Mobile
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/TeamLogin.tsx
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m /Users/mitchjones/Library/Mobile
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/VehiclePage.tsx
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m /Users/mitchjones/Library/Mobile
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/admin/AdminDashboard.tsx
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m /Users/mitchjones/Library/Mobile
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/admin/AdminLogin.tsx
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m /Users/mitchjones/Library/Mobile
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/admin/EventCreate.tsx
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m /Users/mitchjones/Library/Mobile
+    Legacy signals: 0 | New tokens: 0
+\033[0;34m[MINIMAL]\033[0m Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../web/src/pages/admin/EventDetail.tsx
+    Legacy signals: 0 | New tokens: 0
+
+============================================================
+                 KEY COMPONENTS ANALYSIS
+============================================================
+
+\033[0;32m[FULLY MIGRATED]\033[0m components/RaceCenter/
+    Legacy lines: 0 | New lines: 140
+\033[0;31m[NOT MIGRATED]\033[0m components/Leaderboard/
+    Legacy lines: 17 | New lines: 0
+\033[0;31m[NOT MIGRATED]\033[0m components/Map/
+    Legacy lines: 10 | New lines: 0
+\033[0;31m[NOT MIGRATED]\033[0m components/StreamControl/
+    Legacy lines: 44 | New lines: 0
+\033[0;31m[NOT MIGRATED]\033[0m components/VehicleDetail/
+    Legacy lines: 10 | New lines: 0
+\033[0;32m[FULLY MIGRATED]\033[0m components/Team/
+    Legacy lines: 0 | New lines: 44
+\033[0;31m[NOT MIGRATED]\033[0m components/admin/
+    Legacy lines: 15 | New lines: 0
+\033[1;33m[PARTIALLY MIGRATED]\033[0m components/common/
+    Legacy lines: 45 | New lines: 123
+
+============================================================
+                   TOP OFFENDERS
+          (Files with most legacy signals)
+============================================================
+
+Top 15 files with most legacy signals:
+
+  \033[0;31m57\033[0m legacy signals: pages/admin/EventCreate.tsx
+  \033[0;31m48\033[0m legacy signals: components/StreamControl/DiagnosticsModal.tsx
+  \033[0;31m40\033[0m legacy signals: components/common/StatusPill.tsx
+  \033[0;31m37\033[0m legacy signals: components/common/SystemHealthIndicator.tsx
+  \033[0;31m35\033[0m legacy signals: pages/VehiclePage.tsx
+  \033[0;31m30\033[0m legacy signals: components/admin/VehicleBulkUpload.tsx
+  \033[0;31m25\033[0m legacy signals: components/StreamControl/StreamControlPanel.tsx
+  \033[0;31m17\033[0m legacy signals: components/Leaderboard/Leaderboard.tsx
+  \033[0;31m12\033[0m legacy signals: pages/admin/AdminLogin.tsx
+  \033[0;31m11\033[0m legacy signals: components/common/ConnectionStatus.tsx
+  \033[0;31m11\033[0m legacy signals: components/VehicleDetail/YouTubeEmbed.tsx
+  \033[0;31m11\033[0m legacy signals: components/Map/Map.tsx
+  \033[0;31m10\033[0m legacy signals: components/common/ConfirmModal.tsx
+  \033[0;31m8\033[0m legacy signals: pages/EventLive.tsx
+  \033[0;31m8\033[0m legacy signals: components/common/Toast.tsx
+
+============================================================
+                 ROUTE -> PAGE MAPPING
+============================================================
+
+Route                                  | Page Component
+---------------------------------------|--------------------------------
+/                                      | LandingPage.tsx
+/events                                | EventDiscovery.tsx
+/events/:eventId                       | RaceCenter/RaceCenter.tsx
+/events/:eventId/vehicles/:vehicleId   | VehiclePage.tsx
+/team/login                            | TeamLogin.tsx
+/team/dashboard                        | TeamDashboard.tsx
+/production                            | ProductionEventPicker.tsx
+/production/events/:eventId            | ControlRoom.tsx
+/events/:eventId/production            | ProductionDashboard.tsx
+/admin                                 | admin/AdminDashboard.tsx
+/admin/login                           | admin/AdminLogin.tsx
+/admin/events/new                      | admin/EventCreate.tsx
+/admin/events/:eventId                 | admin/EventDetail.tsx
+/dev/components                        | ComponentShowcase.tsx
+*                                      | common/NotFound.tsx
+
+============================================================
+                CLASSIFICATION SUMMARY
+============================================================
+
+\033[0;32mFULLY MIGRATED:\033[0m      0 pages
+\033[1;33mPARTIALLY MIGRATED:\033[0m  0 pages
+\033[0;31mNOT MIGRATED:\033[0m        0 pages
+\033[0;34mMINIMAL (no styles):\033[0m 28 pages
+-----------------------------
+TOTAL PAGES:         28
+
+Migration Progress: 0% fully migrated
+
+============================================================
+        TOP 10 SCREENS TO MIGRATE NEXT
+============================================================
+
+Priority | Screen                    | Effort | Risk   | Why
+---------|---------------------------|--------|--------|----------------------------------
+1        | admin/EventCreate.tsx     | L      | Med    | 45 legacy signals, admin workflow
+2        | VehiclePage.tsx           | L      | Med    | 23 legacy, fan-facing detail view
+3        | admin/AdminLogin.tsx      | S      | Low    | 9 legacy, small file, entry point
+4        | EventLive.tsx             | S      | Low    | 4 legacy, minimal changes needed
+5        | DiagnosticsModal.tsx      | M      | Low    | 33 legacy, isolated modal
+6        | Leaderboard.tsx           | M      | Med    | 17 legacy, core fan component
+7        | StreamControlPanel.tsx    | M      | Med    | 11 legacy, team workflow
+8        | SystemHealthIndicator.tsx | S      | Low    | 23 legacy, admin indicator
+9        | ConfirmModal.tsx          | S      | Low    | 5 legacy, shared component
+10       | ThemeToggle.tsx           | S      | Low    | 5 legacy, shared component
+
+EFFORT KEY:  S = Small (< 1 hour)  M = Medium (1-3 hours)  L = Large (> 3 hours)
+RISK KEY:    Low = No API changes  Med = UI logic changes  High = Breaking changes
+
+============================================================
+              SEARCH COMMANDS USED
+============================================================
+
+Legacy signal detection:
+  grep -E '(gray-[0-9]+|bg-surface|primary-[0-9]+)' <file>
+
+New token detection:
+  grep -E '(neutral-|accent-|status-|text-ds-|p-ds-)' <file>
+
+Raw color detection:
+  grep -E '(blue-[0-9]+|green-[0-9]+|red-[0-9]+|yellow-[0-9]+)' <file>
+
+============================================================
+Report saved to: /Users/mitchjones/Library/Mobile Documents/com~apple~CloudDocs/Downloads/argus-dev-folder/argus_v4/scripts/../artifacts/logs/20260126_200516_ui_coverage_report.txt
+============================================================

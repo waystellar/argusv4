@@ -1,0 +1,31 @@
+# Argus CAN Telemetry Service
+#
+# Reads CAN bus data and publishes decoded telemetry via ZMQ.
+# Depends on argus-can-setup.service to configure the interface first.
+#
+# Updated by EDGE-2: Depends on argus-can-setup instead of raw device node.
+# If CAN hardware is missing, the service starts but reports data_valid=False
+# (degraded mode) instead of crash-looping on a missing device.
+#
+# EDGE-3: Added StartLimit to prevent thrash on service crash.
+#
+[Unit]
+Description=Argus CAN Telemetry Service
+After=network.target argus-can-setup.service
+Wants=argus-can-setup.service
+ConditionPathExists=/etc/argus/.provisioned
+Before=argus-uplink.service
+StartLimitIntervalSec=60
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=argus
+WorkingDirectory=/opt/argus
+EnvironmentFile=/etc/argus/config.env
+ExecStart=/opt/argus/venv/bin/python /opt/argus/bin/can_telemetry.py
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,35 @@
+# Argus Timing System - Development Configuration
+# Copy to dev.tfvars and fill in values
+
+# General
+project_name = "argus"
+environment  = "dev"
+aws_region   = "us-west-2"
+domain_name  = ""  # Not needed for dev
+
+# Database
+db_name     = "argus"
+db_username = "argus"
+db_password = "dev_password_change_me"
+
+# Security
+secret_key = "dev_secret_key_change_me_in_production"
+
+# SSL Certificate (not needed for dev - uses CloudFront default)
+acm_certificate_arn = ""
+
+# RDS - Cost-optimized for dev
+rds_instance_class    = "db.t3.micro"
+rds_allocated_storage = 20
+rds_max_storage       = 50
+
+# Redis - Cost-optimized for dev
+redis_node_type = "cache.t3.micro"
+
+# ECS - Cost-optimized for dev (uses FARGATE_SPOT)
+ecs_cpu           = 256
+ecs_memory        = 512
+ecs_desired_count = 1
+ecs_min_count     = 1
+ecs_max_count     = 3
+gunicorn_workers  = 2
