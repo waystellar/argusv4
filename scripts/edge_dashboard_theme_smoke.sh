@@ -191,19 +191,19 @@ else
   fail "Signal strength gradient missing"
 fi
 
-# ── 6. CARTO dark_all tile source preserved ────────────────────────
+# ── 6. Map tile sources ────────────────────────────────────────────
 log "Step 6: Map tile source"
 
-if grep -q "dark_all" "$DASHBOARD"; then
-  pass "CARTO dark_all tiles preserved for dashboard map"
+if grep -q "opentopomap.org" "$DASHBOARD"; then
+  pass "OpenTopoMap tiles configured in dashboard"
 else
-  fail "CARTO dark_all tiles missing"
+  fail "OpenTopoMap tiles missing from dashboard"
 fi
 
 if grep -q "basemaps.cartocdn.com" "$DASHBOARD"; then
-  pass "basemaps.cartocdn.com domain in dashboard"
+  pass "CARTO tiles configured in dashboard"
 else
-  fail "basemaps.cartocdn.com missing from dashboard"
+  fail "CARTO tiles missing from dashboard"
 fi
 
 # ── 7. No legacy purple accent ────────────────────────────────────

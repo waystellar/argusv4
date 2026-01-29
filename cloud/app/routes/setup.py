@@ -130,7 +130,7 @@ async def setup_wizard(request: Request):
             <!DOCTYPE html>
             <html>
             <head>
-                <title>Argus - Already Configured</title>
+                <title>Already Configured</title>
                 <style>
                     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; max-width: 600px; margin: 100px auto; text-align: center; background: #0a0a0a; color: #fafafa; padding: 16px; }
                     .success { color: #22c55e; }
@@ -141,7 +141,7 @@ async def setup_wizard(request: Request):
             </head>
             <body>
                 <h1 class="success">Setup Complete</h1>
-                <p>Argus has already been configured.</p>
+                <p>The system has already been configured.</p>
                 <p><a href="/">Go to Dashboard</a> | <a href="/docs">API Documentation</a></p>
             </body>
             </html>
@@ -164,7 +164,7 @@ async def setup_wizard(request: Request):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Argus Timing System - Setup Wizard</title>
+    <title>Timing System - Setup Wizard</title>
     <style>
         * {{ box-sizing: border-box; }}
         body {{
@@ -413,7 +413,7 @@ async def setup_wizard(request: Request):
 <body>
     <div class="container">
         <div class="header">
-            <h1>Argus Timing System</h1>
+            <h1>Timing System</h1>
             <p>Setup Wizard</p>
         </div>
 
@@ -427,7 +427,7 @@ async def setup_wizard(request: Request):
             <!-- Step 1: Deployment Mode -->
             <div class="step active" data-step="1">
                 <h2>Step 1: Deployment Mode</h2>
-                <p style="color: #a3a3a3; margin-bottom: 16px; font-size: 0.875rem;">Choose how you want to run Argus.</p>
+                <p style="color: #a3a3a3; margin-bottom: 16px; font-size: 0.875rem;">Choose how you want to run the timing system.</p>
 
                 <div class="radio-group">
                     <label class="radio-option selected" onclick="selectMode(this, 'local')">
@@ -524,7 +524,7 @@ async def setup_wizard(request: Request):
             <div class="step" data-step="success">
                 <div style="text-align: center; padding: 32px 0;">
                     <h2>Setup Complete!</h2>
-                    <p style="color: #a3a3a3; margin-bottom: 24px; font-size: 0.875rem;">Argus is now configured and ready to use.</p>
+                    <p style="color: #a3a3a3; margin-bottom: 24px; font-size: 0.875rem;">The system is now configured and ready to use.</p>
                     <div class="info-box success">
                         <p><strong>API:</strong> <a href="/">http://<span id="final-host"></span>/</a></p>
                         <p><strong>Docs:</strong> <a href="/docs">http://<span id="final-host-2"></span>/docs</a></p>

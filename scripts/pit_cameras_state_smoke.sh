@@ -67,10 +67,10 @@ fi
 log "Step 3: Dropdown onchange"
 
 if [ -f "$DASHBOARD" ]; then
-  if grep -q 'streamCameraSelect.*onchange' "$DASHBOARD"; then
-    pass "streamCameraSelect has onchange handler"
+  if grep -q 'streamCameraSelect.*onchange\|streamCameraSelect.*data-change' "$DASHBOARD"; then
+    pass "streamCameraSelect has change handler"
   else
-    fail "streamCameraSelect missing onchange handler"
+    fail "streamCameraSelect missing change handler"
   fi
 
   if grep -q 'handleCameraSelectChange' "$DASHBOARD"; then
@@ -224,7 +224,7 @@ fi
 log "Step 10: Camera live badge elements"
 
 if [ -f "$DASHBOARD" ]; then
-  for cam in chase pov roof front; do
+  for cam in main cockpit chase suspension; do
     if grep -q "id=\"${cam}-live-badge\"" "$DASHBOARD"; then
       pass "${cam}-live-badge element exists"
     else

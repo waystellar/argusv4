@@ -19,7 +19,28 @@ logger = logging.getLogger("stream_profiles")
 
 # ============ Profile Definitions ============
 
-VALID_CAMERAS = ("chase", "pov", "roof", "front")
+# CAM-CONTRACT-1B: Canonical 4-camera slots (main, cockpit, chase, suspension)
+# Backward compatibility: old names mapped via CAMERA_SLOT_ALIASES
+VALID_CAMERAS = ("main", "cockpit", "chase", "suspension")
+
+# CAM-CONTRACT-1B: Alias mapping for backward compatibility with legacy edge devices
+CAMERA_SLOT_ALIASES = {
+    # Old name -> New canonical name
+    "pov": "cockpit",
+    "roof": "chase",
+    "front": "suspension",
+    "rear": "suspension",  # CAM-CONTRACT-1B: rear is now suspension
+    # Legacy 1-camera systems
+    "cam0": "main",
+    "camera": "main",
+    "default": "main",
+}
+
+def normalize_camera_slot(slot_id: str) -> str:
+    """CAM-CONTRACT-0: Normalize camera slot to canonical name."""
+    if slot_id in VALID_CAMERAS:
+        return slot_id
+    return CAMERA_SLOT_ALIASES.get(slot_id, slot_id)
 
 DEFAULT_PROFILE = "1080p30"
 

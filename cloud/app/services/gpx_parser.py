@@ -28,6 +28,7 @@ class ParsedCourse(TypedDict):
     geojson: dict
     checkpoints: list[CheckpointData]
     total_distance_m: float
+    course_cumulative_m: list[float]  # PROGRESS-1: cumulative distance at each polyline point
     bounds: dict
     point_count: int
     waypoint_count: int
@@ -75,8 +76,9 @@ def parse_gpx(gpx_content: str) -> ParsedCourse:
                     "ele": point.elevation,
                 })
 
-    # Calculate total distance
+    # Calculate total distance and cumulative distances (PROGRESS-1)
     total_distance_m = 0.0
+    course_cumulative_m: list[float] = [0.0] if all_points else []
     for i in range(1, len(all_points)):
         total_distance_m += haversine_distance(
             all_points[i - 1]["lat"],
@@ -84,6 +86,7 @@ def parse_gpx(gpx_content: str) -> ParsedCourse:
             all_points[i]["lat"],
             all_points[i]["lon"],
         )
+        course_cumulative_m.append(total_distance_m)
 
     # Build GeoJSON LineString
     coordinates = [[p["lon"], p["lat"]] for p in all_points]
@@ -98,6 +101,7 @@ def parse_gpx(gpx_content: str) -> ParsedCourse:
         course_name = gpx.name
 
     # Build GeoJSON FeatureCollection (required by frontend Map component)
+    # PROGRESS-1: Store cumulative distances in properties for progress computation
     geojson = {
         "type": "FeatureCollection",
         "features": [
@@ -113,6 +117,7 @@ def parse_gpx(gpx_content: str) -> ParsedCourse:
                 "properties": {
                     "name": course_name,
                     "distance_m": total_distance_m,
+                    "cumulative_m": course_cumulative_m,
                 },
             }
         ],
@@ -222,6 +227,7 @@ def parse_gpx(gpx_content: str) -> ParsedCourse:
         "geojson": geojson,
         "checkpoints": checkpoints,
         "total_distance_m": total_distance_m,
+        "course_cumulative_m": course_cumulative_m,
         "bounds": bounds,
         "point_count": len(all_points),
         "waypoint_count": len(checkpoints),
@@ -376,8 +382,9 @@ def parse_kml(kml_content: str) -> ParsedCourse:
         )
         cp["radius_m"] = _get_checkpoint_radius(cp["checkpoint_type"])
 
-    # Calculate total distance
+    # Calculate total distance and cumulative distances (PROGRESS-1)
     total_distance_m = 0.0
+    course_cumulative_m: list[float] = [0.0] if all_points else []
     for i in range(1, len(all_points)):
         total_distance_m += haversine_distance(
             all_points[i - 1]["lat"],
@@ -385,8 +392,10 @@ def parse_kml(kml_content: str) -> ParsedCourse:
             all_points[i]["lat"],
             all_points[i]["lon"],
         )
+        course_cumulative_m.append(total_distance_m)
 
     # Build GeoJSON FeatureCollection (required by frontend Map component)
+    # PROGRESS-1: Store cumulative distances in properties for progress computation
     coordinates = [[p["lon"], p["lat"]] for p in all_points]
     geojson = {
         "type": "FeatureCollection",
@@ -403,6 +412,7 @@ def parse_kml(kml_content: str) -> ParsedCourse:
                 "properties": {
                     "name": "Course",
                     "distance_m": total_distance_m,
+                    "cumulative_m": course_cumulative_m,
                 },
             }
         ],
@@ -454,6 +464,7 @@ def parse_kml(kml_content: str) -> ParsedCourse:
         "geojson": geojson,
         "checkpoints": checkpoints,
         "total_distance_m": total_distance_m,
+        "course_cumulative_m": course_cumulative_m,
         "bounds": bounds,
         "point_count": len(all_points),
         "waypoint_count": len(checkpoints),

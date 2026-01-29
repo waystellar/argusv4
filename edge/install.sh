@@ -18,6 +18,7 @@ set -euo pipefail
 # ============ Configuration ============
 
 ARGUS_VERSION="4.1.0"
+INSTALL_HAD_ERRORS=false  # EDGE-SETUP-2: Set true if self-healing failed
 ARGUS_HOME="/opt/argus"
 ARGUS_USER="argus"
 CONFIG_DIR="/etc/argus"
@@ -200,6 +201,7 @@ install_edge_scripts() {
         "ant_heart_rate.py"
         "video_director.py"
         "pit_crew_dashboard.py"
+        "stream_profiles.py"
         "simulator.py"
     )
 
@@ -269,7 +271,7 @@ HTML_TEMPLATE = """
 <!DOCTYPE html>
 <html data-theme="argus-ds">
 <head>
-    <title>Argus Edge Setup</title>
+    <title>Edge Setup</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -390,7 +392,7 @@ HTML_TEMPLATE = """
 </head>
 <body>
     <div class="container">
-        <h1>Argus Edge Setup</h1>
+        <h1>Edge Setup</h1>
         <p class="subtitle">Configure this edge device for race telemetry</p>
         <div class="hostname">{{ hostname }}</div>
 
@@ -486,7 +488,7 @@ SUCCESS_TEMPLATE = """
 <!DOCTYPE html>
 <html data-theme="argus-ds">
 <head>
-    <title>Argus - Setup Complete</title>
+    <title>Setup Complete</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -619,7 +621,7 @@ STATUS_TEMPLATE = """
 <!DOCTYPE html>
 <html data-theme="argus-ds">
 <head>
-    <title>Argus Edge - Status</title>
+    <title>Edge Status</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta http-equiv="refresh" content="10">
     <style>
@@ -744,7 +746,7 @@ STATUS_TEMPLATE = """
 </head>
 <body>
     <div class="container">
-        <h1>Argus Edge</h1>
+        <h1>Edge Status</h1>
         <p class="subtitle">Telemetry Unit Status</p>
 
         {% if not config.get('argus_vehicle_number') %}
@@ -1838,19 +1840,23 @@ RestartSec=10
 WantedBy=multi-user.target
 EOF
 
-    # ADDED: Pit Crew Dashboard Service (disabled until provisioned)
-    # Provides web interface for pit crew to monitor telemetry, cameras, driver vitals
+    # EDGE-SETUP-1: Pit Crew Dashboard Service (starts immediately after install)
+    # This is the ONLY first-install UI - serves /setup for password configuration
+    # No ConditionPathExists - dashboard always starts and handles setup internally
     cat > /etc/systemd/system/argus-dashboard.service << EOF
 [Unit]
 Description=Argus Pit Crew Dashboard
-After=network.target argus-gps.service argus-can.service argus-ant.service
-ConditionPathExists=/etc/argus/.provisioned
+After=network-online.target
+Wants=network-online.target
+# Note: No ConditionPathExists - dashboard always starts and redirects to /setup if unconfigured
+# EDGE-CLOUD-3: Uses network-online.target because dashboard sends heartbeats to cloud
 
 [Service]
 Type=simple
 User=${ARGUS_USER}
 WorkingDirectory=${ARGUS_HOME}
-EnvironmentFile=${CONFIG_FILE}
+# EnvironmentFile is optional (may not exist on first install)
+EnvironmentFile=-${CONFIG_FILE}
 ExecStart=${ARGUS_HOME}/venv/bin/python ${ARGUS_HOME}/bin/pit_crew_dashboard.py --port 8080
 Restart=always
 RestartSec=5
@@ -1917,21 +1923,57 @@ EOF
     # Reload systemd
     systemctl daemon-reload
 
-    # Enable and start provisioning service
-    systemctl enable argus-provision
-    systemctl start argus-provision
+    # EDGE-SETUP-1: Create .provisioned flag immediately
+    # This allows telemetry services to start on boot (they'll wait for hardware)
+    touch "$CONFIG_DIR/.provisioned"
+    chown "$ARGUS_USER:$ARGUS_USER" "$CONFIG_DIR/.provisioned"
+    log_success "Created provisioned flag"
 
-    # Disable telemetry services (enabled after provisioning)
-    systemctl disable argus-gps 2>/dev/null || true
-    systemctl disable argus-can-setup 2>/dev/null || true
-    systemctl disable argus-can 2>/dev/null || true
-    systemctl disable argus-uplink 2>/dev/null || true
-    systemctl disable argus-ant 2>/dev/null || true
-    # ADDED: Disable dashboard and video services until provisioned
-    systemctl disable argus-dashboard 2>/dev/null || true
-    systemctl disable argus-video 2>/dev/null || true
-    # EDGE-4: Disable readiness service until provisioned
-    systemctl disable argus-readiness 2>/dev/null || true
+    # EDGE-SETUP-1: Disable old provision server (not used anymore)
+    systemctl disable argus-provision 2>/dev/null || true
+    systemctl stop argus-provision 2>/dev/null || true
+
+    # EDGE-SETUP-1: Enable and start pit crew dashboard immediately
+    # This is the ONLY first-install UI - it handles setup at /setup
+    systemctl enable argus-dashboard
+    systemctl start argus-dashboard
+    log_info "Starting pit crew dashboard..."
+
+    # Wait for dashboard to be ready (up to 60 seconds)
+    local max_attempts=30
+    local attempt=0
+    while [[ $attempt -lt $max_attempts ]]; do
+        if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
+            log_success "Pit crew dashboard is ready on port 8080"
+            break
+        fi
+        attempt=$((attempt + 1))
+        sleep 2
+    done
+
+    if [[ $attempt -ge $max_attempts ]]; then
+        log_warn "Dashboard not responding after 60 seconds - running self-healing..."
+        # EDGE-SETUP-2: Auto-recover instead of showing manual steps
+        if ! validate_and_recover; then
+            log_error "Self-healing failed. Dashboard logs:"
+            journalctl -u argus-dashboard --no-pager -n 30 || true
+            echo
+            log_error "Installation completed but dashboard is not responding."
+            log_error "Please report this issue with the logs above."
+            # Set a flag so print_completion knows to show troubleshooting
+            INSTALL_HAD_ERRORS=true
+        fi
+    fi
+
+    # Enable telemetry services for boot (they'll start when hardware is available)
+    systemctl enable argus-gps 2>/dev/null || true
+    systemctl enable argus-can-setup 2>/dev/null || true
+    systemctl enable argus-can 2>/dev/null || true
+    systemctl enable argus-uplink 2>/dev/null || true
+    systemctl enable argus-ant 2>/dev/null || true
+    systemctl enable argus-video 2>/dev/null || true
+    # EDGE-4: Enable readiness service
+    systemctl enable argus-readiness 2>/dev/null || true
 
     log_success "Systemd services installed"
 }
@@ -2033,6 +2075,106 @@ CRON_EOF
     log_success "Disk/log reliability configured (EDGE-5)"
 }
 
+# EDGE-SETUP-2: Self-healing diagnostics and recovery
+# Called automatically if dashboard fails to start - no manual intervention needed
+validate_and_recover() {
+    local recovery_attempted=false
+    local issues_found=0
+
+    log_info "Running self-healing diagnostics..."
+
+    # ── 1. Check sudoers configuration ──
+    if ! sudo -u "$ARGUS_USER" sudo -n systemctl status argus-dashboard >/dev/null 2>&1; then
+        log_warn "Sudoers not working - auto-fixing..."
+        issues_found=$((issues_found + 1))
+
+        # Re-run configure_sudoers
+        cat > /etc/sudoers.d/argus << 'SUDOERS_EOF'
+# Argus Timing System - Allow argus user to manage argus services
+argus ALL=(ALL) NOPASSWD: /usr/bin/systemctl enable argus-*
+argus ALL=(ALL) NOPASSWD: /usr/bin/systemctl disable argus-*
+argus ALL=(ALL) NOPASSWD: /usr/bin/systemctl start argus-*
+argus ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop argus-*
+argus ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart argus-*
+argus ALL=(ALL) NOPASSWD: /usr/bin/systemctl status argus-*
+argus ALL=(ALL) NOPASSWD: /usr/bin/journalctl -u argus-*
+SUDOERS_EOF
+        chmod 0440 /etc/sudoers.d/argus
+        chown root:root /etc/sudoers.d/argus
+
+        if visudo -c -f /etc/sudoers.d/argus >/dev/null 2>&1; then
+            log_success "Sudoers auto-fixed"
+            recovery_attempted=true
+        else
+            log_error "Sudoers auto-fix failed"
+        fi
+    fi
+
+    # ── 2. Check .provisioned flag ──
+    if [[ ! -f "$CONFIG_DIR/.provisioned" ]]; then
+        log_warn ".provisioned flag missing - auto-creating..."
+        issues_found=$((issues_found + 1))
+        touch "$CONFIG_DIR/.provisioned"
+        chown "$ARGUS_USER:$ARGUS_USER" "$CONFIG_DIR/.provisioned"
+        log_success ".provisioned flag created"
+        recovery_attempted=true
+    fi
+
+    # ── 3. Check directory permissions ──
+    if [[ ! -w "$ARGUS_HOME/config" ]] || [[ "$(stat -c '%U' "$ARGUS_HOME/config" 2>/dev/null)" != "$ARGUS_USER" ]]; then
+        log_warn "Directory permissions incorrect - auto-fixing..."
+        issues_found=$((issues_found + 1))
+        chown -R "$ARGUS_USER:$ARGUS_USER" "$ARGUS_HOME"
+        chown -R "$ARGUS_USER:$ARGUS_USER" "$CONFIG_DIR"
+        chmod 755 "$ARGUS_HOME/cache/screenshots" 2>/dev/null || true
+        log_success "Directory permissions fixed"
+        recovery_attempted=true
+    fi
+
+    # ── 4. Check Python dependencies ──
+    if ! "$ARGUS_HOME/venv/bin/python" -c "import aiohttp; import gpxpy" >/dev/null 2>&1; then
+        log_warn "Missing Python dependencies - auto-installing..."
+        issues_found=$((issues_found + 1))
+        "$ARGUS_HOME/venv/bin/pip" install --quiet aiohttp gpxpy httpx 2>/dev/null || true
+        log_success "Python dependencies installed"
+        recovery_attempted=true
+    fi
+
+    # ── 5. Retry dashboard start if recovery was attempted ──
+    if $recovery_attempted; then
+        log_info "Recovery completed - restarting dashboard..."
+        systemctl daemon-reload
+        systemctl restart argus-dashboard
+
+        # Wait for health check again
+        local attempt=0
+        local max_attempts=15
+        while [[ $attempt -lt $max_attempts ]]; do
+            if curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
+                log_success "Dashboard started after recovery!"
+                return 0
+            fi
+            attempt=$((attempt + 1))
+            sleep 2
+        done
+
+        # Still failed after recovery
+        log_error "Dashboard still not responding after recovery attempt"
+        return 1
+    fi
+
+    # No recovery needed but dashboard still not up - check logs
+    if ! curl -fsS http://127.0.0.1:8080/health >/dev/null 2>&1; then
+        log_error "Dashboard not responding - no recoverable issues found"
+        return 1
+    fi
+
+    if [[ $issues_found -eq 0 ]]; then
+        log_success "Self-healing check: no issues found"
+    fi
+    return 0
+}
+
 get_device_ip() {
     # Try to get the primary IP address
     ip route get 1 2>/dev/null | awk '{print $7; exit}' || hostname -I | awk '{print $1}' || echo "unknown"
@@ -2042,9 +2184,16 @@ print_completion() {
     local IP=$(get_device_ip)
 
     echo
-    echo -e "${GREEN}╔═══════════════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║           ARGUS EDGE INSTALLATION COMPLETE                    ║${NC}"
-    echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════╝${NC}"
+    # EDGE-SETUP-2: Show different banner depending on success/failure
+    if $INSTALL_HAD_ERRORS; then
+        echo -e "${YELLOW}╔═══════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${YELLOW}║       ARGUS EDGE INSTALLATION COMPLETED WITH ISSUES           ║${NC}"
+        echo -e "${YELLOW}╚═══════════════════════════════════════════════════════════════╝${NC}"
+    else
+        echo -e "${GREEN}╔═══════════════════════════════════════════════════════════════╗${NC}"
+        echo -e "${GREEN}║           ARGUS EDGE INSTALLATION COMPLETE                    ║${NC}"
+        echo -e "${GREEN}╚═══════════════════════════════════════════════════════════════╝${NC}"
+    fi
     echo
     echo -e "  ${BLUE}Installation Summary:${NC}"
     echo "  ─────────────────────────────────────────────────"
@@ -2053,55 +2202,47 @@ print_completion() {
     echo "  User:             $ARGUS_USER"
     echo "  ─────────────────────────────────────────────────"
     echo
-    echo -e "  ${YELLOW}NEXT STEP: Configure this device${NC}"
+    echo -e "  ${YELLOW}NEXT STEP: Complete Setup${NC}"
     echo "  ─────────────────────────────────────────────────"
     echo
-    echo "  1. Reboot this device:"
-    echo "       sudo reboot"
-    echo
-    echo "  2. Open a browser and go to:"
-    echo -e "       ${GREEN}http://${IP}:${PROVISION_PORT}${NC}"
-    echo
-    echo "  3. Enter your vehicle number, team name,"
-    echo "     truck token, and cloud server URL."
-    echo
-    echo "  4. Click 'Save & Activate Telemetry'"
-    echo
-    echo "  The device will reboot and start sending data!"
-    echo "  ─────────────────────────────────────────────────"
-    echo
-    # ADDED: Post-provisioning info about pit crew dashboard
-    echo -e "  ${BLUE}After Provisioning:${NC}"
-    echo "  ─────────────────────────────────────────────────"
-    echo "  The Pit Crew Dashboard will be available at:"
+    echo "  Open a browser and go to:"
     echo -e "       ${GREEN}http://${IP}:8080${NC}"
     echo
-    echo "  Services that will start automatically:"
-    echo "    • argus-gps        - GPS telemetry"
-    echo "    • argus-can-setup  - CAN interface bringup (oneshot)"
-    echo "    • argus-can        - CAN bus telemetry"
+    echo "  You will see the Pit Crew Dashboard Setup page."
+    echo "  1. Create a dashboard password (share with pit crew)"
+    echo "  2. Optionally enter vehicle number, cloud URL, token"
+    echo "  3. Click 'Complete Setup'"
+    echo
+    echo "  That's it! No reboot required."
+    echo "  ─────────────────────────────────────────────────"
+    echo
+    echo -e "  ${BLUE}Services:${NC}"
+    echo "  ─────────────────────────────────────────────────"
+    echo "    • argus-dashboard  - Pit crew web interface (port 8080)"
+    echo "    • argus-gps        - GPS telemetry (when hardware available)"
     echo "    • argus-uplink     - Cloud data upload"
-    echo "    • argus-ant        - ANT+ heart rate"
-    echo "    • argus-dashboard  - Pit crew web interface"
-    echo "    • argus-video      - Video director"
     echo "  ─────────────────────────────────────────────────"
-    echo
-    echo -e "  ${YELLOW}Troubleshooting Tools:${NC}"
-    echo "  ─────────────────────────────────────────────────"
-    echo "  If provisioning fails or services don't start:"
-    echo
-    echo "  1. Run diagnostics:"
-    echo "       /opt/argus/bin/diagnose.sh"
-    echo
-    echo "  2. Fix sudoers (if needed):"
-    echo "       sudo /opt/argus/bin/fix-sudoers.sh"
-    echo
-    echo "  3. Manual activation (if web UI fails):"
-    echo "       sudo /opt/argus/bin/activate-telemetry.sh"
-    echo
-    echo "  4. View API diagnostics:"
-    echo "       curl http://${IP}:8080/api/diagnose | jq"
-    echo "  ─────────────────────────────────────────────────"
+
+    # EDGE-SETUP-2: Only show troubleshooting section if there were errors
+    if $INSTALL_HAD_ERRORS; then
+        echo
+        echo -e "  ${RED}Troubleshooting:${NC}"
+        echo "  ─────────────────────────────────────────────────"
+        echo "  The dashboard did not start automatically."
+        echo "  Self-healing was attempted but the issue persists."
+        echo
+        echo "  Please try these steps:"
+        echo
+        echo "  1. Reboot the device:"
+        echo "       sudo reboot"
+        echo
+        echo "  2. If still not working, run diagnostics:"
+        echo "       /opt/argus/bin/diagnose.sh"
+        echo
+        echo "  3. Full repair (requires cloud credentials):"
+        echo "       sudo /opt/argus/bin/repair.sh --fix-deps"
+        echo "  ─────────────────────────────────────────────────"
+    fi
     echo
 }
 

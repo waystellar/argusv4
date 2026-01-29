@@ -363,6 +363,10 @@ async def get_diagnostics(
         if has_urls:
             video_status = "configured"
 
+    # CLOUD-MANAGE-0: Also check vehicle-scoped edge presence (set by simple heartbeat).
+    # This provides edge_url even before the detailed heartbeat has been sent.
+    edge_presence = await redis_client.get_edge_presence(vehicle_id)
+
     # Merge edge detail fields if available
     gps_status = "unknown"
     can_status = "unknown"
@@ -370,15 +374,42 @@ async def get_diagnostics(
     data_rate_hz = None
     edge_ip = None
     edge_version = None
+    # CLOUD-MANAGE-0: Prefer edge_url from presence (available immediately from simple heartbeat)
+    edge_url = edge_presence.get("edge_url") if edge_presence else None
 
     if edge_detail:
+        # Read fields sent by heartbeat payload directly
         gps_status = edge_detail.get("gps_status", "unknown")
         can_status = edge_detail.get("can_status", "unknown")
         queue_depth = edge_detail.get("queue_depth")
         data_rate_hz = edge_detail.get("data_rate_hz")
         edge_ip = edge_detail.get("edge_ip")
         edge_version = edge_detail.get("edge_version")
-        if edge_detail.get("video_streaming"):
+        edge_url = edge_detail.get("edge_url")  # EDGE-URL-1
+
+        # Derive GPS status from last_gps_ts if not explicitly set
+        if gps_status == "unknown" and edge_detail.get("last_gps_ts"):
+            gps_age_s = (now_ms - edge_detail["last_gps_ts"]) / 1000
+            if gps_age_s <= 30:
+                gps_status = "locked"
+            elif gps_age_s <= 120:
+                gps_status = "searching"
+            else:
+                gps_status = "no_signal"
+
+        # Derive CAN status from last_can_ts if not explicitly set
+        if can_status == "unknown" and edge_detail.get("last_can_ts"):
+            can_age_s = (now_ms - edge_detail["last_can_ts"]) / 1000
+            if can_age_s <= 30:
+                can_status = "active"
+            elif can_age_s <= 120:
+                can_status = "idle"
+
+        # Derive video status from streaming_status
+        streaming_st = edge_detail.get("streaming_status", "idle")
+        if streaming_st == "live":
+            video_status = "streaming"
+        elif edge_detail.get("video_streaming"):
             video_status = "streaming"
 
     # Infer GPS locked if we have recent position data
@@ -404,6 +435,7 @@ async def get_diagnostics(
         "data_rate_hz": data_rate_hz,
         "edge_ip": edge_ip,
         "edge_version": edge_version,
+        "edge_url": edge_url,  # EDGE-URL-1: Auto-discovered edge device URL
     }
 
 

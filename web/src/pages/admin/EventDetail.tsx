@@ -14,6 +14,7 @@ import { useState, useEffect, useRef, useMemo } from 'react'
 import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import maplibregl from 'maplibre-gl'
+import { buildBasemapStyle } from '../../config/basemap'
 import { useToast } from '../../hooks/useToast'
 import { SkeletonVehicleCard } from '../../components/common/Skeleton'
 import { PageHeader } from '../../components/common'
@@ -715,33 +716,17 @@ export default function EventDetail() {
 function CourseMap({ courseData }: { courseData: CourseData | null | undefined }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const mapRef = useRef<maplibregl.Map | null>(null)
+  // CLOUD-MAP-2: Topo overlay error detection
+  const [topoUnavailable, setTopoUnavailable] = useState(false)
+  const topoErrorFiredRef = useRef(false)
 
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return
 
+    // MAP-STYLE-2: Use centralized basemap config
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: {
-        version: 8,
-        sources: {
-          // OpenTopoMap for terrain visibility
-          'topo-tiles': {
-            type: 'raster',
-            tiles: ['https://tile.opentopomap.org/{z}/{x}/{y}.png'],
-            tileSize: 256,
-            attribution: '&copy; OpenTopoMap contributors',
-          },
-        },
-        layers: [
-          {
-            id: 'topo-tiles',
-            type: 'raster',
-            source: 'topo-tiles',
-            minzoom: 0,
-            maxzoom: 17,
-          },
-        ],
-      },
+      style: buildBasemapStyle(),
       center: [-116.38, 34.12], // Default to KOH area
       zoom: 10,
       attributionControl: false,
@@ -749,6 +734,21 @@ function CourseMap({ courseData }: { courseData: CourseData | null | undefined }
 
     map.addControl(new maplibregl.NavigationControl(), 'top-right')
     map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right')
+
+    // CLOUD-MAP-2: Detect topo overlay failures (same pattern as Map.tsx)
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    map.on('error', (e: any) => {
+      if (topoErrorFiredRef.current) return
+      const isTopoSource = e.sourceId === 'topo-tiles'
+      const isTileError = e.error?.message?.includes('tile') ||
+        e.error?.message?.includes('Failed to fetch') ||
+        e.error?.status === 429 || e.error?.status === 403 ||
+        e.error?.status === 0
+      if (isTopoSource || (isTileError && !e.sourceId)) {
+        topoErrorFiredRef.current = true
+        setTopoUnavailable(true)
+      }
+    })
 
     mapRef.current = map
 
@@ -837,7 +837,16 @@ function CourseMap({ courseData }: { courseData: CourseData | null | undefined }
   }, [courseData])
 
   return (
-    <div ref={containerRef} className="h-80 w-full bg-neutral-900">
+    <div ref={containerRef} className="relative h-80 w-full bg-neutral-900">
+      {/* CLOUD-MAP-2: Topo overlay unavailable banner */}
+      {topoUnavailable && (
+        <div className="absolute top-2 left-2 z-10 bg-amber-800/90 text-amber-100 text-xs px-3 py-1.5 rounded-lg flex items-center gap-1.5">
+          <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+          Topo layer unavailable — showing base map
+        </div>
+      )}
       {!courseData?.geojson && (
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
           <div className="text-center text-neutral-400">

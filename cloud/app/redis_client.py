@@ -246,6 +246,28 @@ async def publish_edge_status(event_id: str, vehicle_id: str, status: dict) -> N
     })
 
 
+# ============ Edge Presence (vehicle-scoped, no event_id required) ============
+
+async def set_edge_presence(vehicle_id: str, data: dict) -> None:
+    """
+    CLOUD-MANAGE-0: Store edge presence info keyed by vehicle_id only.
+    Used by simple heartbeat to store edge_url before event_id is known.
+    TTL: 60 seconds (longer than event-scoped edge status since simple heartbeat
+    is the first tier and may be the only one sending).
+    """
+    r = await get_redis()
+    key = f"edge_presence:{vehicle_id}"
+    await r.set(key, json.dumps(data), ex=60)
+
+
+async def get_edge_presence(vehicle_id: str) -> Optional[dict]:
+    """CLOUD-MANAGE-0: Get vehicle-scoped edge presence (edge_url, capabilities)."""
+    r = await get_redis()
+    key = f"edge_presence:{vehicle_id}"
+    raw = await r.get(key)
+    return json.loads(raw) if raw else None
+
+
 # ============ Edge Command Management ============
 
 async def set_edge_command(event_id: str, vehicle_id: str, command_id: str, command: dict) -> None:

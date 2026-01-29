@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
 # fan_map_topo_smoke.sh — Smoke test for Fan Watch Live topo layer
 #
+# MAP-STYLE-1 + MAP-STYLE-2: Maps always use light topo basemap.
+# CARTO dark/light tiles and layer toggle removed.
+# Tile URLs centralized in config/basemap.ts (MAP-STYLE-2).
+#
 # Validates:
 #   1. Web frontend builds (tsc + vite build via Docker)
-#   2. Map.tsx has topo tile source (OpenTopoMap)
-#   3. Map.tsx has layer toggle support (topo/streets)
+#   2. Basemap config has topo tile source (OpenTopoMap a/b/c mirrors)
+#   3. Map.tsx uses topo-only (no CARTO, no layer toggle)
 #   4. CSP includes tile.opentopomap.org in img-src and connect-src
 #   5. OpenTopoMap tile server reachable
-#   6. Existing basemap sources preserved (CARTO dark/light)
+#   6. Background layer for tile fallback (in basemap config)
 #
 # Usage:
 #   bash scripts/fan_map_topo_smoke.sh
@@ -18,6 +22,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WEB_DIR="$REPO_ROOT/web"
+BASEMAP_TS="$WEB_DIR/src/config/basemap.ts"
 MAP_FILE="$WEB_DIR/src/components/Map/Map.tsx"
 NGINX_CONF="$WEB_DIR/nginx.conf"
 FAIL=0
@@ -53,64 +58,63 @@ else
   fi
 fi
 
-# ── 2. Map.tsx has topo tile source ────────────────────────────────
-log "Step 2: Topo tile source"
+# ── 2. Basemap config has topo tile source ────────────────────────
+log "Step 2: Topo tile source (config/basemap.ts)"
 
-if [ -f "$MAP_FILE" ]; then
-  # Check for OpenTopoMap tile URL
-  if grep -q "tile.opentopomap.org" "$MAP_FILE"; then
-    pass "Map.tsx references tile.opentopomap.org"
+if [ -f "$BASEMAP_TS" ]; then
+  if grep -q "tile.opentopomap.org" "$BASEMAP_TS"; then
+    pass "basemap.ts references tile.opentopomap.org"
   else
-    fail "Map.tsx missing tile.opentopomap.org"
+    fail "basemap.ts missing tile.opentopomap.org"
   fi
 
-  # Check for topo tile URL pattern with z/x/y
-  if grep -q "opentopomap.org.*{z}.*{x}.*{y}" "$MAP_FILE"; then
-    pass "Map.tsx has OpenTopoMap tile URL template"
+  if grep -q "opentopomap.org.*{z}.*{x}.*{y}" "$BASEMAP_TS"; then
+    pass "basemap.ts has OpenTopoMap tile URL template"
   else
-    fail "Map.tsx missing OpenTopoMap tile URL template"
+    fail "basemap.ts missing OpenTopoMap tile URL template"
   fi
 
-  # Check for OpenTopoMap attribution
-  if grep -q "opentopomap.org" "$MAP_FILE" && grep -q "CC-BY-SA" "$MAP_FILE"; then
-    pass "Map.tsx has OpenTopoMap attribution"
+  if grep -q "opentopomap.org" "$BASEMAP_TS" && grep -q "CC-BY-SA" "$BASEMAP_TS"; then
+    pass "basemap.ts has OpenTopoMap attribution"
   else
-    fail "Map.tsx missing OpenTopoMap attribution"
+    fail "basemap.ts missing OpenTopoMap attribution"
   fi
+
+  # Check all three mirror subdomains
+  for sub in a b c; do
+    if grep -q "https://${sub}.tile.opentopomap.org" "$BASEMAP_TS"; then
+      pass "Mirror ${sub}.tile.opentopomap.org present"
+    else
+      fail "Mirror ${sub}.tile.opentopomap.org missing"
+    fi
+  done
 else
-  fail "Map.tsx not found"
+  fail "config/basemap.ts not found"
 fi
 
-# ── 3. Layer toggle support ────────────────────────────────────────
-log "Step 3: Layer toggle"
+# ── 3. Topo-only (no CARTO, no layer toggle) ────────────────────
+log "Step 3: Topo-only checks"
 
 if [ -f "$MAP_FILE" ]; then
-  # Check for layer type definition
-  if grep -q "topo.*streets\|MapLayer" "$MAP_FILE"; then
-    pass "Map.tsx has layer type (topo/streets)"
+  # MAP-STYLE-1: No CARTO tiles
+  if grep -q "dark_all\|light_all\|basemaps.cartocdn.com" "$MAP_FILE"; then
+    fail "CARTO tile references still present (should be topo-only)"
   else
-    fail "Map.tsx missing layer type"
+    pass "No CARTO tile references (topo-only)"
   fi
 
-  # Check for layer state
-  if grep -q "mapLayer\|setMapLayer" "$MAP_FILE"; then
-    pass "Map.tsx has layer state management"
+  # MAP-STYLE-1: No MapLayer type or streets toggle
+  if grep -qE "type MapLayer|'streets'|setMapLayer" "$MAP_FILE"; then
+    fail "Layer toggle still present (should be topo-only)"
   else
-    fail "Map.tsx missing layer state"
+    pass "No layer toggle (topo-only)"
   fi
 
-  # Check topo is default
-  if grep -q "useState.*'topo'" "$MAP_FILE"; then
-    pass "Default layer is topo"
+  # MAP-STYLE-1: No theme-driven tile switching
+  if grep -q "TILE_SOURCES\|useThemeStore" "$MAP_FILE"; then
+    fail "Theme-driven tile switching still present"
   else
-    fail "Default layer is NOT topo"
-  fi
-
-  # Check for toggle UI
-  if grep -q "Topo" "$MAP_FILE" && grep -q "Streets" "$MAP_FILE"; then
-    pass "Map.tsx has Topo/Streets toggle labels"
-  else
-    fail "Map.tsx missing toggle labels"
+    pass "No theme-driven tile switching"
   fi
 fi
 
@@ -120,28 +124,24 @@ log "Step 4: CSP checks"
 if [ -f "$NGINX_CONF" ]; then
   CSP_LINE=$(grep -i "content-security-policy" "$NGINX_CONF" 2>/dev/null || echo "")
 
-  # img-src must include opentopomap
   if echo "$CSP_LINE" | grep -q "img-src[^;]*tile.opentopomap.org"; then
     pass "CSP img-src includes tile.opentopomap.org"
   else
     fail "CSP img-src MISSING tile.opentopomap.org"
   fi
 
-  # img-src must include wildcard for subdomains
   if echo "$CSP_LINE" | grep -q 'img-src[^;]*\*\.tile\.opentopomap\.org'; then
     pass "CSP img-src includes *.tile.opentopomap.org"
   else
     fail "CSP img-src MISSING *.tile.opentopomap.org"
   fi
 
-  # connect-src must include opentopomap
   if echo "$CSP_LINE" | grep -q "connect-src[^;]*tile.opentopomap.org"; then
     pass "CSP connect-src includes tile.opentopomap.org"
   else
     fail "CSP connect-src MISSING tile.opentopomap.org"
   fi
 
-  # connect-src must include wildcard for subdomains
   if echo "$CSP_LINE" | grep -q 'connect-src[^;]*\*\.tile\.opentopomap\.org'; then
     pass "CSP connect-src includes *.tile.opentopomap.org"
   else
@@ -154,7 +154,6 @@ fi
 # ── 5. OpenTopoMap tile reachability ───────────────────────────────
 log "Step 5: OpenTopoMap tile reachability"
 
-# Test tile fetch (zoom 0, x 0, y 0 — single world tile)
 TOPO_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
   -H "User-Agent: ArgusSmoke/1.0" \
   "https://a.tile.opentopomap.org/0/0/0.png" 2>/dev/null || echo "000")
@@ -164,7 +163,6 @@ else
   warn "OpenTopoMap tile returned HTTP $TOPO_CODE (may be rate-limited)"
 fi
 
-# Also test subdomain b
 TOPO_B_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
   -H "User-Agent: ArgusSmoke/1.0" \
   "https://b.tile.opentopomap.org/0/0/0.png" 2>/dev/null || echo "000")
@@ -174,26 +172,25 @@ else
   warn "OpenTopoMap subdomain b returned HTTP $TOPO_B_CODE"
 fi
 
-# ── 6. Existing basemaps preserved ─────────────────────────────────
-log "Step 6: Existing basemaps preserved"
+# ── 6. Background layer for tile fallback ──────────────────────────
+log "Step 6: Background layer checks"
+
+if [ -f "$BASEMAP_TS" ]; then
+  if grep -q "'background'" "$BASEMAP_TS" && grep -q '#f2efe9' "$BASEMAP_TS"; then
+    pass "Background layer with light fallback color (in basemap config)"
+  else
+    fail "Background layer or #f2efe9 color missing from basemap config"
+  fi
+else
+  fail "config/basemap.ts not found"
+fi
 
 if [ -f "$MAP_FILE" ]; then
-  if grep -q "dark_all" "$MAP_FILE"; then
-    pass "CARTO dark_all tiles preserved"
+  # CLOUD-MAP-2: Banner text changed to "Topo layer unavailable"
+  if grep -q "Topo layer unavailable" "$MAP_FILE"; then
+    pass "Topo layer unavailable banner exists"
   else
-    fail "CARTO dark_all tiles missing"
-  fi
-
-  if grep -q "light_all" "$MAP_FILE"; then
-    pass "CARTO light_all tiles preserved"
-  else
-    fail "CARTO light_all tiles missing"
-  fi
-
-  if grep -q "basemaps.cartocdn.com" "$MAP_FILE"; then
-    pass "basemaps.cartocdn.com domain preserved"
-  else
-    fail "basemaps.cartocdn.com domain missing"
+    fail "Topo layer unavailable banner missing"
   fi
 fi
 

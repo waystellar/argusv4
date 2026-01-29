@@ -1,5 +1,5 @@
 """
-Geographic utilities: haversine distance, checkpoint detection.
+Geographic utilities: haversine distance, checkpoint detection, course projection.
 """
 from math import radians, cos, sin, asin, sqrt
 from typing import Optional
@@ -73,3 +73,124 @@ def format_time_delta(delta_ms: int) -> str:
         minutes = int((seconds % 3600) // 60)
         remaining_seconds = seconds % 60
         return f"+{hours}:{minutes:02d}:{remaining_seconds:04.1f}"
+
+
+# ============ PROGRESS-1: Course Progress Computation ============
+
+METERS_PER_MILE = 1609.344
+
+
+def project_onto_course(
+    lat: float,
+    lon: float,
+    coordinates: list[list[float]],
+    cumulative_m: list[float],
+) -> Optional[tuple[float, float]]:
+    """
+    Project a GPS point onto the nearest segment of a course polyline.
+
+    Args:
+        lat: Vehicle latitude
+        lon: Vehicle longitude
+        coordinates: Course polyline as list of [lon, lat] pairs (GeoJSON order)
+        cumulative_m: Precomputed cumulative distances in meters at each polyline point
+
+    Returns:
+        (progress_m, off_course_m) tuple, or None if course has < 2 points.
+        progress_m: Distance along course from start to the projection point.
+        off_course_m: Perpendicular distance from vehicle to course.
+    """
+    if len(coordinates) < 2 or len(cumulative_m) < 2:
+        return None
+
+    best_progress_m = 0.0
+    best_off_course_m = float("inf")
+
+    for i in range(len(coordinates) - 1):
+        # GeoJSON coordinates are [lon, lat]
+        seg_start_lon, seg_start_lat = coordinates[i]
+        seg_end_lon, seg_end_lat = coordinates[i + 1]
+
+        # Compute segment length in meters
+        seg_len_m = cumulative_m[i + 1] - cumulative_m[i]
+        if seg_len_m <= 0:
+            continue
+
+        # Project point onto segment using flat-earth approximation (fine for short segments)
+        # Convert to local cartesian (meters) relative to segment start
+        cos_lat = cos(radians(seg_start_lat))
+        dx_seg = (seg_end_lon - seg_start_lon) * cos_lat
+        dy_seg = seg_end_lat - seg_start_lat
+        dx_pt = (lon - seg_start_lon) * cos_lat
+        dy_pt = lat - seg_start_lat
+
+        # Parametric projection: t in [0, 1] is fraction along segment
+        seg_sq = dx_seg * dx_seg + dy_seg * dy_seg
+        if seg_sq < 1e-18:
+            continue
+        t = max(0.0, min(1.0, (dx_pt * dx_seg + dy_pt * dy_seg) / seg_sq))
+
+        # Projected point in local coords
+        proj_x = dx_seg * t
+        proj_y = dy_seg * t
+
+        # Distance from vehicle to projected point (degrees, approximate)
+        diff_x = dx_pt - proj_x
+        diff_y = dy_pt - proj_y
+
+        # Convert back to meters using haversine for accuracy
+        proj_lat = seg_start_lat + (seg_end_lat - seg_start_lat) * t
+        proj_lon = seg_start_lon + (seg_end_lon - seg_start_lon) * t
+        off_course_m = haversine_distance(lat, lon, proj_lat, proj_lon)
+
+        if off_course_m < best_off_course_m:
+            best_off_course_m = off_course_m
+            best_progress_m = cumulative_m[i] + seg_len_m * t
+
+    return (best_progress_m, best_off_course_m)
+
+
+def compute_progress_miles(
+    lat: float,
+    lon: float,
+    course_geojson: Optional[dict],
+) -> Optional[tuple[float, float, float]]:
+    """
+    Compute course progress for a vehicle GPS position.
+
+    Args:
+        lat: Vehicle latitude
+        lon: Vehicle longitude
+        course_geojson: Event's course_geojson (GeoJSON FeatureCollection)
+
+    Returns:
+        (progress_miles, miles_remaining, course_length_miles) or None if no course.
+    """
+    if not course_geojson:
+        return None
+
+    features = course_geojson.get("features", [])
+    if not features:
+        return None
+
+    feature = features[0]
+    geometry = feature.get("geometry", {})
+    properties = feature.get("properties", {})
+
+    coordinates = geometry.get("coordinates", [])
+    cumulative_m = properties.get("cumulative_m", [])
+    total_distance_m = properties.get("distance_m", 0.0)
+
+    if not coordinates or not cumulative_m or total_distance_m <= 0:
+        return None
+
+    result = project_onto_course(lat, lon, coordinates, cumulative_m)
+    if result is None:
+        return None
+
+    progress_m, off_course_m = result
+    course_length_miles = total_distance_m / METERS_PER_MILE
+    progress_miles = progress_m / METERS_PER_MILE
+    miles_remaining = course_length_miles - progress_miles
+
+    return (progress_miles, miles_remaining, course_length_miles)

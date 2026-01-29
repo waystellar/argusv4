@@ -20,12 +20,12 @@ import { useState, useCallback } from 'react'
 // Stream states that match backend state machine
 export type StreamState = 'DISCONNECTED' | 'IDLE' | 'STARTING' | 'STREAMING' | 'STOPPING' | 'ERROR'
 
-// Camera label mapping for user-friendly names
+// CAM-CONTRACT-1B: Canonical 4-camera slots with user-friendly labels
 const CAMERA_LABELS: Record<string, string> = {
+  main: 'Main Cam',
+  cockpit: 'Cockpit',
   chase: 'Chase Cam',
-  pov: 'Driver POV',
-  roof: 'Roof 360',
-  front: 'Front Bumper',
+  suspension: 'Suspension',
 }
 
 export interface EdgeStatusInfo {
@@ -328,7 +328,8 @@ export default function StreamControlPanel({
             Select Camera
           </div>
           <div className="grid grid-cols-2 gap-ds-2">
-            {['chase', 'pov', 'roof', 'front'].map((cam) => {
+            {/* CAM-CONTRACT-1B: Canonical 4-camera slots */}
+            {['main', 'cockpit', 'chase', 'suspension'].map((cam) => {
               const camInfo = edge.cameras.find(c => c.name === cam)
               const isAvailable = camInfo?.status === 'available' || camInfo?.status === 'active'
               const isSelected = selectedCamera === cam

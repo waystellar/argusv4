@@ -66,46 +66,48 @@ else
   fail "nginx.conf not found at $NGINX_CONF"
 fi
 
-# ── 3. Map.tsx tile URLs match CSP ─────────────────────────────────
-log "Step 3: Map.tsx tile source alignment"
+# ── 3. Basemap config tile URLs match CSP ─────────────────────────
+log "Step 3: Basemap tile source alignment"
 
 MAP_FILE="$WEB_DIR/src/components/Map/Map.tsx"
-if [ -f "$MAP_FILE" ]; then
-  # Extract tile domains from Map.tsx
-  CARTO_IN_MAP=$(grep -o "basemaps\.cartocdn\.com" "$MAP_FILE" 2>/dev/null | head -1)
-  OSM_IN_MAP=$(grep -o "tile\.openstreetmap\.org" "$MAP_FILE" 2>/dev/null | head -1 || true)
+BASEMAP_TS="$WEB_DIR/src/config/basemap.ts"
 
-  if [ -n "$CARTO_IN_MAP" ]; then
-    pass "Map.tsx uses CARTO tiles (basemaps.cartocdn.com)"
+# MAP-STYLE-2: Tile URLs are in centralized config
+if [ -f "$BASEMAP_TS" ]; then
+  TOPO_IN_CONFIG=$(grep -o "tile\.opentopomap\.org" "$BASEMAP_TS" 2>/dev/null | head -1)
+
+  if [ -n "$TOPO_IN_CONFIG" ]; then
+    pass "Basemap config uses OpenTopoMap tiles"
   else
-    fail "Map.tsx does not reference basemaps.cartocdn.com"
+    fail "Basemap config does not reference tile.opentopomap.org"
   fi
 
-  if [ -n "$OSM_IN_MAP" ]; then
-    pass "Map.tsx uses OSM tiles (tile.openstreetmap.org)"
-  else
-    warn "Map.tsx does not reference tile.openstreetmap.org (optional fallback)"
-  fi
-
-  # Verify tile domains in Map.tsx exist in CSP
+  # Verify tile domains in basemap config exist in CSP
   if [ -n "$CSP_LINE" ]; then
-    # Only check tile URL lines (contain /{z}/{x}/{y}) — skip attribution links
-    MAP_DOMAINS=$(grep '{z}/{x}/{y}' "$MAP_FILE" 2>/dev/null | grep -oE 'https://[a-z.*]+\.(cartocdn\.com|openstreetmap\.org|opentopomap\.org)' | sed 's|https://||' | sort -u)
+    MAP_DOMAINS=$(grep '{z}/{x}/{y}' "$BASEMAP_TS" 2>/dev/null | grep -oE 'https://[a-z.*]+\.(opentopomap\.org)' | sed 's|https://||' | sort -u)
     for D in $MAP_DOMAINS; do
       PLAIN_D=$(echo "$D" | sed 's/\*\.//')
-      # Also derive wildcard parent: a.tile.example.org → *.tile.example.org
       WILDCARD_D=$(echo "$PLAIN_D" | sed 's/^[a-z]*\./\*\./')
       if echo "$CSP_LINE" | grep -q "$PLAIN_D"; then
-        pass "Map.tsx domain $D found in CSP"
+        pass "Basemap domain $D found in CSP"
       elif echo "$CSP_LINE" | grep -q "$WILDCARD_D"; then
-        pass "Map.tsx domain $D covered by CSP wildcard $WILDCARD_D"
+        pass "Basemap domain $D covered by CSP wildcard $WILDCARD_D"
       else
-        fail "Map.tsx domain $D NOT in CSP"
+        fail "Basemap domain $D NOT in CSP"
       fi
     done
   fi
 else
-  fail "Map.tsx not found at $MAP_FILE"
+  fail "config/basemap.ts not found"
+fi
+
+if [ -f "$MAP_FILE" ]; then
+  # MAP-STYLE-1: No CARTO tiles
+  if grep -q "dark_all\|light_all\|basemaps.cartocdn.com" "$MAP_FILE"; then
+    fail "Map.tsx still has CARTO tile references (should be topo-only)"
+  else
+    pass "No CARTO tile references (topo-only)"
+  fi
 fi
 
 # ── 4. StandingsTab handles "Not Started" entries ─────────────────
@@ -222,21 +224,22 @@ fi
 # ── 7. Basemap reachability ────────────────────────────────────────
 log "Step 7: Basemap tile reachability"
 
-CARTO_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
-  "https://basemaps.cartocdn.com/dark_all/0/0/0.png" 2>/dev/null || echo "000")
-if [ "$CARTO_CODE" = "200" ] || [ "$CARTO_CODE" = "304" ]; then
-  pass "CARTO tile reachable (HTTP $CARTO_CODE)"
+TOPO_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "User-Agent: ArgusSmoke/1.0" \
+  "https://a.tile.opentopomap.org/0/0/0.png" 2>/dev/null || echo "000")
+if [ "$TOPO_CODE" = "200" ] || [ "$TOPO_CODE" = "304" ]; then
+  pass "OpenTopoMap tile reachable (HTTP $TOPO_CODE)"
 else
-  fail "CARTO tile returned HTTP $CARTO_CODE"
+  warn "OpenTopoMap tile returned HTTP $TOPO_CODE (may be rate-limited)"
 fi
 
-OSM_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+TOPO_B_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
   -H "User-Agent: ArgusSmoke/1.0" \
-  "https://tile.openstreetmap.org/0/0/0.png" 2>/dev/null || echo "000")
-if [ "$OSM_CODE" = "200" ] || [ "$OSM_CODE" = "304" ]; then
-  pass "OSM tile reachable (HTTP $OSM_CODE)"
+  "https://b.tile.opentopomap.org/0/0/0.png" 2>/dev/null || echo "000")
+if [ "$TOPO_B_CODE" = "200" ] || [ "$TOPO_B_CODE" = "304" ]; then
+  pass "OpenTopoMap subdomain b reachable (HTTP $TOPO_B_CODE)"
 else
-  warn "OSM tile returned HTTP $OSM_CODE (may be rate-limited)"
+  warn "OpenTopoMap subdomain b returned HTTP $TOPO_B_CODE"
 fi
 
 # ── Summary ────────────────────────────────────────────────────────

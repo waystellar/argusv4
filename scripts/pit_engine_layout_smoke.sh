@@ -198,7 +198,7 @@ fi
 log "Step 8: CAN parsing preserved"
 
 if [ -f "$DASHBOARD" ]; then
-  if grep -q "engine_load: float" "$DASHBOARD"; then
+  if grep -q "engine_load:" "$DASHBOARD"; then
     pass "engine_load field in telemetry model"
   else
     fail "engine_load removed from telemetry model"

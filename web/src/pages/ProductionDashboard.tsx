@@ -91,12 +91,12 @@ interface ProductionTelemetry {
   last_update_ms: number | null
 }
 
-// Camera name display mapping
+// CAM-CONTRACT-1B: Canonical 4-camera slots
 const CAMERA_LABELS: Record<string, string> = {
+  main: 'Main Cam',
+  cockpit: 'Cockpit',
   chase: 'Chase Cam',
-  pov: 'Driver POV',
-  roof: 'Roof 360',
-  front: 'Front Bumper',
+  suspension: 'Suspension',
 }
 
 export default function ProductionDashboard() {

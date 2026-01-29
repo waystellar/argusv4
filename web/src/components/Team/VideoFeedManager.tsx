@@ -17,22 +17,19 @@ interface VideoFeedManagerProps {
   onUpdate: (camera_name: string, youtube_url: string, permission_level: string) => void
 }
 
+// CAM-CONTRACT-1B: Canonical 4-camera slots with labels and icons
 const CAMERA_LABELS: Record<string, string> = {
-  chase: 'Chase Cam (Rear)',
-  pov: 'Driver POV',
-  roof: 'Roof Cam',
-  front: 'Front Bumper',
-  side: 'Side View',
-  rear: 'Rear View',
+  main: 'Main Cam',
+  cockpit: 'Cockpit',
+  chase: 'Chase Cam',
+  suspension: 'Suspension',
 }
 
 const CAMERA_ICONS: Record<string, string> = {
+  main: '📹',
+  cockpit: '👤',
   chase: '🚗',
-  pov: '👤',
-  roof: '🔝',
-  front: '⬆️',
-  side: '↔️',
-  rear: '⬇️',
+  suspension: '🔧',
 }
 
 export default function VideoFeedManager({ feeds, onUpdate }: VideoFeedManagerProps) {

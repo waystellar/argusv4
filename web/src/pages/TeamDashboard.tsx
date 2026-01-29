@@ -10,44 +10,13 @@
  * - "Preview Fan View" always available when event is active + vehicle visible.
  * - Cloud-only controls (visibility, sharing policy) accessible via "Stay Here".
  */
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import VideoFeedManager from '../components/Team/VideoFeedManager'
 // TEAM-3: TelemetrySharingPolicy moved to Pit Crew edge dashboard
 import { PageHeader } from '../components/common'
 import { Badge, EmptyState, Alert } from '../components/ui'
 import { copyToClipboard } from '../utils/clipboard'
-
-// TEAM-1: localStorage key for edge device URL
-const EDGE_URL_STORAGE_KEY = 'argus_edge_url'
-
-/**
- * Validate edge URL to prevent open-redirect attacks.
- * Only allows http/https URLs pointing to LAN IPs, hostnames, or localhost.
- */
-function isValidEdgeUrl(url: string): boolean {
-  try {
-    const parsed = new URL(url)
-    // Must be http or https
-    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return false
-    const host = parsed.hostname
-    // Allow localhost
-    if (host === 'localhost' || host === '127.0.0.1') return true
-    // Allow private IPv4 ranges: 10.x, 172.16-31.x, 192.168.x
-    if (/^10\./.test(host)) return true
-    if (/^172\.(1[6-9]|2\d|3[01])\./.test(host)) return true
-    if (/^192\.168\./.test(host)) return true
-    // Allow .local mDNS hostnames
-    if (host.endsWith('.local')) return true
-    // Allow short hostnames (no dots = LAN hostname)
-    if (!host.includes('.')) return true
-    // Allow any hostname with port (common for edge devices)
-    if (parsed.port) return true
-    return false
-  } catch {
-    return false
-  }
-}
 
 type TabId = 'ops' | 'sharing'
 
@@ -89,6 +58,7 @@ interface DiagnosticsData {
   data_rate_hz: number | null
   edge_ip: string | null
   edge_version: string | null
+  edge_url: string | null  // EDGE-URL-1: Auto-discovered edge device URL
 }
 
 const API_BASE = import.meta.env.VITE_API_URL || '/api/v1'
@@ -103,15 +73,8 @@ export default function TeamDashboard() {
   const [diagnostics, setDiagnostics] = useState<DiagnosticsData | null>(null)
   const [copySuccess, setCopySuccess] = useState(false)
 
-  // TEAM-1: Gateway redirect state
-  const [edgeUrl, setEdgeUrl] = useState<string>(
-    () => localStorage.getItem(EDGE_URL_STORAGE_KEY) || ''
-  )
-  const [edgeUrlInput, setEdgeUrlInput] = useState('')
-  const [edgeUrlError, setEdgeUrlError] = useState<string | null>(null)
-  const [redirectCountdown, setRedirectCountdown] = useState<number | null>(null)
-  const [redirectCancelled, setRedirectCancelled] = useState(false)
-  const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  // EDGE-URL-1: Edge URL auto-discovered from diagnostics (no manual entry)
+  const edgeUrl = diagnostics?.edge_url || null
 
   // Get token from localStorage
   const token = localStorage.getItem('team_token')
@@ -123,64 +86,6 @@ export default function TeamDashboard() {
     }
     fetchDashboard()
   }, [token])
-
-  // TEAM-1: Auto-redirect to edge when URL is set and not cancelled
-  useEffect(() => {
-    if (!edgeUrl || redirectCancelled || isLoading || !data) return
-
-    // Start 5-second countdown
-    setRedirectCountdown(5)
-    countdownRef.current = setInterval(() => {
-      setRedirectCountdown((prev) => {
-        if (prev === null || prev <= 1) {
-          // Redirect now
-          if (countdownRef.current) clearInterval(countdownRef.current)
-          window.location.href = edgeUrl
-          return 0
-        }
-        return prev - 1
-      })
-    }, 1000)
-
-    return () => {
-      if (countdownRef.current) clearInterval(countdownRef.current)
-    }
-  }, [edgeUrl, redirectCancelled, isLoading, data])
-
-  // TEAM-1: Cancel redirect and stay on cloud dashboard
-  function handleCancelRedirect() {
-    if (countdownRef.current) clearInterval(countdownRef.current)
-    setRedirectCountdown(null)
-    setRedirectCancelled(true)
-  }
-
-  // TEAM-1: Save edge URL to localStorage
-  function handleSaveEdgeUrl() {
-    const trimmed = edgeUrlInput.trim()
-    if (!trimmed) {
-      setEdgeUrlError('URL is required')
-      return
-    }
-    // Add protocol if missing
-    const urlWithProtocol = /^https?:\/\//i.test(trimmed) ? trimmed : `http://${trimmed}`
-    if (!isValidEdgeUrl(urlWithProtocol)) {
-      setEdgeUrlError('Must be a local/LAN address (e.g. http://192.168.1.100:8080)')
-      return
-    }
-    localStorage.setItem(EDGE_URL_STORAGE_KEY, urlWithProtocol)
-    setEdgeUrl(urlWithProtocol)
-    setEdgeUrlError(null)
-    setRedirectCancelled(false)
-  }
-
-  // TEAM-1: Clear saved edge URL
-  function handleClearEdgeUrl() {
-    localStorage.removeItem(EDGE_URL_STORAGE_KEY)
-    setEdgeUrl('')
-    setEdgeUrlInput('')
-    setRedirectCancelled(false)
-    setRedirectCountdown(null)
-  }
 
   // Poll diagnostics every 5 seconds when on Ops tab (only after data loads)
   useEffect(() => {
@@ -330,6 +235,7 @@ EDGE STATUS
 Status: ${diagnostics.edge_status}
 Online: ${diagnostics.is_online ? 'Yes' : 'No'}
 Last Seen: ${diagnostics.edge_last_seen_ms ? `${Math.round((Date.now() - diagnostics.edge_last_seen_ms) / 1000)}s ago` : 'Never'}
+Edge URL: ${diagnostics.edge_url || 'Not detected'}
 Edge IP: ${diagnostics.edge_ip || 'Unknown'}
 Edge Version: ${diagnostics.edge_version || 'Unknown'}
 Data Rate: ${diagnostics.data_rate_hz ? `${diagnostics.data_rate_hz} Hz` : 'Unknown'}
@@ -371,6 +277,8 @@ Visible to Fans: ${data.visible ? 'Yes' : 'No'}
 
   const isStale = edgeAge !== null && edgeAge > 30
   const isOffline = edgeAge !== null && edgeAge > 60
+  // HEARTBEAT-1: Edge never connected = unknown (don't show green "LIVE")
+  const isUnknown = edgeAge === null && diagnostics?.edge_status !== 'online'
 
   if (isLoading) {
     return (
@@ -466,85 +374,43 @@ Visible to Fans: ${data.visible ? 'Yes' : 'No'}
         }
       />
 
-      {/* TEAM-1: Gateway redirect banner */}
-      {redirectCountdown !== null && redirectCountdown > 0 && (
-        <div className="px-ds-4 py-ds-3 bg-accent-900/80 border-b border-accent-700 flex items-center justify-between">
-          <div className="flex items-center gap-ds-3">
-            <span className="w-8 h-8 rounded-full bg-accent-600 flex items-center justify-center font-mono font-bold text-white text-ds-body">
-              {redirectCountdown}
-            </span>
-            <div>
-              <p className="text-ds-body-sm text-accent-200">Redirecting to Pit Crew Portal...</p>
-              <p className="text-ds-caption text-accent-400 font-mono truncate max-w-[200px]">{edgeUrl}</p>
-            </div>
-          </div>
-          <button
-            onClick={handleCancelRedirect}
-            className="min-h-[40px] px-ds-4 py-ds-2 bg-neutral-800 hover:bg-neutral-700 text-neutral-200 rounded-ds-md text-ds-body-sm font-medium transition-colors duration-ds-fast"
-          >
-            Stay Here
-          </button>
-        </div>
-      )}
-
-      {/* TEAM-1: Edge URL setup (when no edge URL saved and redirect not active) */}
-      {!edgeUrl && !isLoading && data && (
-        <div className="px-ds-4 py-ds-4 bg-neutral-900 border-b border-neutral-800">
-          <h3 className="text-ds-body-sm font-medium text-neutral-200 mb-ds-2">Connect to Pit Crew Portal</h3>
-          <p className="text-ds-caption text-neutral-500 mb-ds-3">
-            Enter your edge device URL to access full truck controls (streaming, cameras, telemetry).
-          </p>
-          <div className="flex gap-ds-2">
-            <input
-              type="text"
-              value={edgeUrlInput}
-              onChange={(e) => { setEdgeUrlInput(e.target.value); setEdgeUrlError(null) }}
-              onKeyDown={(e) => e.key === 'Enter' && handleSaveEdgeUrl()}
-              placeholder="e.g. 192.168.1.100:8080"
-              className="flex-1 min-h-[40px] px-ds-3 bg-neutral-800 border border-neutral-700 rounded-ds-md text-neutral-200 text-ds-body-sm placeholder:text-neutral-600 focus:outline-none focus:border-accent-500"
-            />
-            <button
-              onClick={handleSaveEdgeUrl}
-              className="min-h-[40px] px-ds-4 bg-accent-600 hover:bg-accent-500 text-white rounded-ds-md text-ds-body-sm font-medium transition-colors duration-ds-fast"
-            >
-              Save
-            </button>
-          </div>
-          {edgeUrlError && (
-            <p className="text-ds-caption text-status-error mt-ds-1">{edgeUrlError}</p>
-          )}
-          {diagnostics?.edge_ip && (
-            <button
-              onClick={() => { setEdgeUrlInput(`${diagnostics.edge_ip}:8080`); setEdgeUrlError(null) }}
-              className="mt-ds-2 text-ds-caption text-accent-400 hover:text-accent-300 transition-colors"
-            >
-              Use detected edge IP: {diagnostics.edge_ip}:8080
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* TEAM-1: Quick actions bar (when redirect cancelled or edge URL set) */}
-      {edgeUrl && redirectCancelled && (
+      {/* EDGE-URL-1: Pit Crew Portal — auto-discovered from edge heartbeat */}
+      {!isLoading && data && (
         <div className="px-ds-4 py-ds-2 bg-neutral-900/50 border-b border-neutral-800/50 flex items-center justify-between">
-          <div className="flex items-center gap-ds-2">
-            <a
-              href={edgeUrl}
-              className="min-h-[36px] px-ds-3 py-ds-1 bg-accent-600 hover:bg-accent-500 text-white rounded-ds-md text-ds-body-sm font-medium transition-colors duration-ds-fast flex items-center gap-ds-2"
-            >
-              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-              </svg>
-              Open Pit Crew
-            </a>
-            <button
-              onClick={handleClearEdgeUrl}
-              className="min-h-[36px] px-ds-3 py-ds-1 text-neutral-500 hover:text-neutral-300 text-ds-caption transition-colors"
-            >
-              Change URL
-            </button>
-          </div>
-          <span className="text-ds-caption text-neutral-600 font-mono truncate max-w-[150px]">{edgeUrl}</span>
+          {edgeUrl ? (
+            <>
+              <div className="flex items-center gap-ds-2">
+                {/* CLOUD-MANAGE-0: Green dot + button when edge is reachable */}
+                <span className="w-2 h-2 rounded-full bg-status-success animate-pulse" />
+                <a
+                  href={edgeUrl}
+                  className="min-h-[36px] px-ds-3 py-ds-1 bg-accent-600 hover:bg-accent-500 text-white rounded-ds-md text-ds-body-sm font-medium transition-colors duration-ds-fast flex items-center gap-ds-2"
+                >
+                  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                  </svg>
+                  Open Pit Crew Portal
+                </a>
+                <span className="text-ds-caption text-neutral-500">Edge Online</span>
+              </div>
+              <span className="text-ds-caption text-neutral-600 font-mono truncate max-w-[200px]">{edgeUrl}</span>
+            </>
+          ) : (
+            <div className="flex items-center gap-ds-2 py-ds-1">
+              {/* CLOUD-MANAGE-0: Clearer messaging for edge not yet detected */}
+              <span className="w-2 h-2 rounded-full bg-neutral-600" />
+              <span className="text-ds-body-sm text-neutral-500">
+                {diagnostics?.edge_status === 'offline'
+                  ? 'Edge device offline'
+                  : 'Waiting for edge device'}
+              </span>
+              <span className="text-ds-caption text-neutral-600">
+                {diagnostics?.edge_status === 'offline'
+                  ? '— check power and network connection'
+                  : '— edge will appear automatically when powered on'}
+              </span>
+            </div>
+          )}
         </div>
       )}
 
@@ -552,11 +418,12 @@ Visible to Fans: ${data.visible ? 'Yes' : 'No'}
       <div className="px-ds-4 py-ds-2 bg-neutral-950/50 border-b border-neutral-800/50">
         {data.event_id ? (
           <div className="flex items-center justify-between">
+            {/* HEARTBEAT-1: Show edge connection status clearly, including unknown */}
             <div className="flex items-center gap-ds-2">
-              <span className={`w-2 h-2 rounded-full ${isOffline ? 'bg-status-error' : isStale ? 'bg-status-warning animate-pulse' : 'bg-status-success animate-pulse'}`} />
+              <span className={`w-2 h-2 rounded-full ${isOffline ? 'bg-status-error' : isStale ? 'bg-status-warning animate-pulse' : isUnknown ? 'bg-neutral-500' : 'bg-status-success animate-pulse'}`} />
               <span className="text-ds-body-sm text-neutral-300">Active Event</span>
-              <Badge variant={isOffline ? 'error' : isStale ? 'warning' : 'success'} size="sm">
-                {isOffline ? 'OFFLINE' : isStale ? 'STALE' : 'LIVE'}
+              <Badge variant={isOffline ? 'error' : isStale ? 'warning' : isUnknown ? 'neutral' : 'success'} size="sm">
+                {isOffline ? 'OFFLINE' : isStale ? 'STALE' : isUnknown ? 'WAITING' : 'LIVE'}
               </Badge>
             </div>
             <span className="text-ds-caption text-neutral-500 font-mono">{data.event_id}</span>
@@ -565,9 +432,10 @@ Visible to Fans: ${data.visible ? 'Yes' : 'No'}
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-ds-2">
               <span className="w-2 h-2 rounded-full bg-neutral-600" />
+              {/* CLOUD-MANAGE-0: Clearer no-event messaging */}
               <span className="text-ds-body-sm text-neutral-500">No Active Event</span>
             </div>
-            <span className="text-ds-caption text-accent-400">Register to go live</span>
+            <span className="text-ds-caption text-neutral-500">Contact organizers to register</span>
           </div>
         )}
       </div>
@@ -633,6 +501,7 @@ Visible to Fans: ${data.visible ? 'Yes' : 'No'}
             edgeAge={edgeAge}
             isStale={isStale}
             isOffline={isOffline}
+            isUnknown={isUnknown}
             onCopyDiagnostics={handleCopyDiagnostics}
             copySuccess={copySuccess}
             onToggleVisibility={() => updateVisibility(!data.visible)}
@@ -642,7 +511,6 @@ Visible to Fans: ${data.visible ? 'Yes' : 'No'}
         ) : (
           <SharingTab
             data={data}
-            token={token || ''}
             onUpdateVisibility={updateVisibility}
             onUpdateVideoFeed={updateVideoFeed}
           />
@@ -684,6 +552,7 @@ function OpsTab({
   edgeAge,
   isStale,
   isOffline,
+  isUnknown,
   onCopyDiagnostics,
   copySuccess,
   token,
@@ -694,6 +563,7 @@ function OpsTab({
   edgeAge: number | null
   isStale: boolean
   isOffline: boolean
+  isUnknown: boolean
   onCopyDiagnostics: () => void
   copySuccess: boolean
   onToggleVisibility?: () => void
@@ -701,27 +571,36 @@ function OpsTab({
   onFetchDiagnostics: () => void
 }) {
   // Compute truck status
+  // HEARTBEAT-1: Handle unknown state (edge never connected) distinctly from offline
   const getTruckStatusBadge = (): { label: string; variant: 'success' | 'warning' | 'error' | 'neutral' } => {
     if (!data.event_id) return { label: 'Not Registered', variant: 'neutral' }
     if (isOffline) return { label: 'Offline', variant: 'error' }
     if (diagnostics?.video_status === 'streaming') return { label: 'Streaming', variant: 'success' }
     if (isStale) return { label: 'Stale Data', variant: 'warning' }
     if (diagnostics?.edge_status === 'online') return { label: 'Online', variant: 'success' }
+    if (isUnknown) return { label: 'Waiting for Edge', variant: 'neutral' }
     return { label: 'No Data', variant: 'warning' }
   }
 
   const truckStatus = getTruckStatusBadge()
 
-  // Determine next action for the user
+  // CLOUD-MANAGE-0: Determine next action for the user with clearer state messaging
   const getNextAction = (): { message: string; action: string; actionLabel: string } | null => {
     if (!data.event_id) {
       return {
-        message: 'Your truck is not registered for any event.',
-        action: 'Contact race organizers to register for an upcoming event.',
-        actionLabel: 'Registration Required',
+        message: 'No active event found for this truck.',
+        action: 'Contact race organizers to register, or wait for the event to be scheduled.',
+        actionLabel: 'No Event',
       }
     }
-    if (isOffline || diagnostics?.edge_status === 'offline' || diagnostics?.edge_status === 'unknown') {
+    if (diagnostics?.edge_status === 'unknown' && !diagnostics?.edge_last_seen_ms) {
+      return {
+        message: 'Waiting for first heartbeat from edge device.',
+        action: 'Power on the edge device — it will connect automatically when it has network access.',
+        actionLabel: 'Waiting for Edge',
+      }
+    }
+    if (isOffline || diagnostics?.edge_status === 'offline') {
       const lastSeenHint = diagnostics?.edge_last_seen_ms
         ? ` Last seen ${Math.round((Date.now() - diagnostics.edge_last_seen_ms) / 1000)}s ago.`
         : ''
@@ -810,6 +689,40 @@ function OpsTab({
       {/* Streaming / Edge Status Section */}
       <section>
         <h2 className="text-ds-caption font-semibold text-neutral-400 uppercase tracking-wide mb-ds-3">Streaming & Edge Status</h2>
+        {/* HEARTBEAT-1: Edge Device heartbeat status — independent of telemetry/video */}
+        <div className="bg-neutral-900 rounded-ds-lg p-ds-4 mb-ds-3">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-ds-3">
+              <div className={`w-3 h-3 rounded-full ${
+                diagnostics?.edge_status === 'online' ? 'bg-status-success animate-pulse' :
+                diagnostics?.edge_status === 'stale' ? 'bg-status-warning animate-pulse' :
+                diagnostics?.edge_status === 'offline' ? 'bg-status-error' :
+                'bg-neutral-600'
+              }`} />
+              <div>
+                <div className="text-ds-body-sm font-semibold text-neutral-100">Edge Device</div>
+                {/* CLOUD-MANAGE-0: Clearer edge status messaging */}
+                <div className={`text-ds-caption ${
+                  diagnostics?.edge_status === 'online' ? 'text-status-success' :
+                  diagnostics?.edge_status === 'stale' ? 'text-status-warning' :
+                  diagnostics?.edge_status === 'offline' ? 'text-status-error' :
+                  'text-neutral-500'
+                }`}>
+                  {diagnostics?.edge_status === 'online' ? 'Edge Online — heartbeat active' :
+                   diagnostics?.edge_status === 'stale' ? 'Heartbeat delayed — check connection' :
+                   diagnostics?.edge_status === 'offline' ? 'Edge Offline — no heartbeat received' :
+                   'Waiting for edge device to connect'}
+                </div>
+              </div>
+            </div>
+            <div className="text-right">
+              <div className="text-ds-caption text-neutral-500">Last Seen</div>
+              <div className="text-ds-body-sm font-mono text-neutral-300">
+                {edgeAge !== null ? (edgeAge < 60 ? `${edgeAge}s ago` : `${Math.floor(edgeAge / 60)}m ago`) : 'Never'}
+              </div>
+            </div>
+          </div>
+        </div>
         <div className="grid grid-cols-2 gap-ds-3">
           {/* GPS Status */}
           <StatusCard
@@ -951,6 +864,9 @@ function OpsTab({
                 : 'Never'
             }
           />
+          {diagnostics?.edge_url && (
+            <DiagRow label="Edge URL" value={diagnostics.edge_url} />
+          )}
           {diagnostics?.edge_ip && (
             <DiagRow label="Edge IP" value={diagnostics.edge_ip} />
           )}
@@ -980,13 +896,12 @@ function OpsTab({
             <Alert variant="error">
               <strong className="block">Edge Device Offline</strong>
               <span className="text-ds-caption opacity-80">
-                No data received in over 60 seconds.
                 {diagnostics?.edge_last_seen_ms
-                  ? ` Last seen ${Math.round((Date.now() - diagnostics.edge_last_seen_ms) / 1000)}s ago.`
-                  : ' Edge has never connected to this event.'}
+                  ? `No heartbeat received for ${Math.round((Date.now() - diagnostics.edge_last_seen_ms) / 1000)}s.`
+                  : 'Edge has never connected to this event.'}
               </span>
               <span className="block text-ds-caption opacity-60 mt-ds-1">
-                Likely causes: edge not powered, no network, wrong cloud URL, or incorrect truck token.
+                Check: edge is powered on, has network, cloud URL is correct, truck token matches.
               </span>
             </Alert>
           )}
@@ -1014,11 +929,9 @@ function OpsTab({
  */
 function SharingTab({
   data,
-  token,
   onUpdateVideoFeed,
 }: {
   data: DashboardData
-  token: string
   onUpdateVisibility?: (visible: boolean) => void
   onUpdateVideoFeed: (camera_name: string, youtube_url: string, permission_level: string) => void
 }) {

@@ -182,10 +182,10 @@ fi
 log "Step 7: Offline help message"
 
 if [ -f "$TEAM_DASH" ]; then
-  if grep -q 'Likely causes' "$TEAM_DASH"; then
-    pass "Offline alert includes likely causes"
+  if grep -q 'Likely causes\|Check:.*edge\|check.*truck token' "$TEAM_DASH"; then
+    pass "Offline alert includes troubleshooting guidance"
   else
-    fail "Offline alert missing likely causes"
+    fail "Offline alert missing troubleshooting guidance"
   fi
 
   if grep -q 'truck token' "$TEAM_DASH"; then
@@ -224,8 +224,50 @@ if [ -f "$TEAM_DASH" ]; then
   fi
 fi
 
-# ── 9. Redis client has required functions ──────────────────────
-log "Step 9: Redis client functions"
+# ── 9a. Heartbeat endpoint updates last_seen ──────────────────
+log "Step 9a: Heartbeat updates last_seen (TEAM-OFFLINE-1 fix)"
+
+PROD_PY="$REPO_ROOT/cloud/app/routes/production.py"
+
+if [ -f "$PROD_PY" ]; then
+  if grep -A 10 'set_edge_status' "$PROD_PY" | grep -q 'set_vehicle_last_seen'; then
+    pass "heartbeat endpoint calls set_vehicle_last_seen after set_edge_status"
+  else
+    fail "heartbeat endpoint does NOT update last_seen — edge will show 'unknown'"
+  fi
+
+  if grep -q 'edge_heartbeat_received' "$PROD_PY"; then
+    pass "heartbeat endpoint has structured log line"
+  else
+    fail "heartbeat endpoint missing log line"
+  fi
+fi
+
+# ── 9b. Diagnostics derives GPS/CAN from heartbeat timestamps ──
+log "Step 9b: Diagnostics derives status from heartbeat fields"
+
+if [ -f "$TEAM_PY" ]; then
+  if grep -q 'last_gps_ts' "$TEAM_PY"; then
+    pass "diagnostics reads last_gps_ts from edge_detail"
+  else
+    fail "diagnostics missing last_gps_ts derivation"
+  fi
+
+  if grep -q 'last_can_ts' "$TEAM_PY"; then
+    pass "diagnostics reads last_can_ts from edge_detail"
+  else
+    fail "diagnostics missing last_can_ts derivation"
+  fi
+
+  if grep -q 'streaming_status' "$TEAM_PY"; then
+    pass "diagnostics reads streaming_status from edge_detail"
+  else
+    fail "diagnostics missing streaming_status derivation"
+  fi
+fi
+
+# ── 9c. Redis client has required functions ──────────────────────
+log "Step 9d: Redis client functions"
 
 if [ -f "$REDIS_CLIENT" ]; then
   if grep -q 'def get_vehicle_last_seen' "$REDIS_CLIENT"; then

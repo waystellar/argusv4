@@ -22,7 +22,7 @@ from app.schemas import (
     LatestPositionsResponse,
     VehiclePosition,
 )
-from app.services.geo import is_valid_speed
+from app.services.geo import is_valid_speed, compute_progress_miles
 from app.services.checkpoint_service import check_checkpoint_crossings
 from app.services.kalman_filter import smooth_position
 from app import redis_client
@@ -225,6 +225,23 @@ async def ingest_telemetry(
     # Commit all positions and telemetry
     await db.commit()
 
+    # PROGRESS-1: Compute course progress for the latest position
+    progress_data = {}
+    if last_pos:
+        # Load course_geojson from event (cached query - event already validated)
+        event_result = await db.execute(select(Event).where(Event.event_id == event_id))
+        event_obj = event_result.scalar_one_or_none()
+        if event_obj and event_obj.course_geojson:
+            progress = compute_progress_miles(
+                last_pos["lat"], last_pos["lon"], event_obj.course_geojson
+            )
+            if progress:
+                progress_miles, miles_remaining, _ = progress
+                progress_data = {
+                    "progress_miles": round(progress_miles, 2),
+                    "miles_remaining": round(miles_remaining, 2),
+                }
+
     # Update Redis with latest position and telemetry
     # FIXED: Broadcast telemetry even when no new GPS data (supports telemetry-only uploads)
     if last_pos or latest_telemetry:
@@ -234,6 +251,8 @@ async def ingest_telemetry(
             last_pos["team_name"] = vehicle.team_name
             # Include latest telemetry data in position cache
             last_pos.update(latest_telemetry)
+            # PROGRESS-1: Include progress in cached position
+            last_pos.update(progress_data)
             await redis_client.set_latest_position(event_id, vehicle_id, last_pos)
             # Track last-seen timestamp for staleness detection
             await redis_client.set_vehicle_last_seen(event_id, vehicle_id, last_pos["ts_ms"])
@@ -249,6 +268,8 @@ async def ingest_telemetry(
                 "ts_ms": last_pos["ts_ms"],
             }
             sse_data.update(latest_telemetry)
+            # PROGRESS-1: Include progress in SSE broadcast
+            sse_data.update(progress_data)
             await redis_client.publish_event(event_id, "position", sse_data)
         elif latest_telemetry:
             # Telemetry-only update (no GPS) - broadcast telemetry data
@@ -308,6 +329,8 @@ async def get_latest_positions(
                 heading_deg=pos.get("heading_deg"),
                 last_checkpoint=pos.get("last_checkpoint"),
                 last_update_ms=pos["ts_ms"],
+                progress_miles=pos.get("progress_miles"),
+                miles_remaining=pos.get("miles_remaining"),
             )
         )
 
@@ -363,4 +386,116 @@ async def get_truck_info(
         "vehicle_class": vehicle.vehicle_class,
         "event_name": event.name,
         "event_status": event.status,
+    }
+
+
+@router.post("/telemetry/heartbeat")
+@limiter.limit(f"{settings.rate_limit_trucks}/minute")
+async def telemetry_heartbeat(
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+    x_truck_token: str = Header(..., alias="X-Truck-Token"),
+):
+    """
+    CLOUD-EDGE-STATUS-1: Simple heartbeat endpoint for edge presence tracking.
+
+    This endpoint allows edge devices to report they are alive WITHOUT needing
+    to know their event_id upfront. The server auto-discovers the event from
+    the truck token.
+
+    EDGE-CLOUD-1: Works for events in ANY status (not just in_progress).
+    Returns event_status so edge can distinguish "event not live" from "connected".
+
+    CLOUD-MANAGE-0: Accepts optional JSON body with edge_url and capabilities.
+    This allows edge_url to be available in Team Dashboard immediately, before
+    the detailed production heartbeat (which requires event_id) has been sent.
+
+    Updates:
+    - last_seen timestamp in Redis (for online/offline detection)
+    - edge_presence in Redis (for edge_url auto-discovery)
+    - Broadcasts presence to SSE subscribers
+
+    Returns:
+    - vehicle_id, event_id (for edge to cache if needed)
+    - event_status: current event status (draft, scheduled, in_progress, completed)
+    - server_ts_ms (for clock sync)
+    """
+    # EDGE-CLOUD-1: Validate token with relaxed event status check.
+    # Unlike validate_truck_token (which requires in_progress), heartbeat
+    # accepts any event status so edge can connect before race starts.
+
+    # Check Redis cache first
+    token_info = await redis_client.get_truck_token_info(x_truck_token)
+    if token_info:
+        vehicle_id = token_info["vehicle_id"]
+        event_id = token_info["event_id"]
+        # Fetch current event status (cache may be stale on status)
+        result = await db.execute(select(Event).where(Event.event_id == event_id))
+        event_obj = result.scalar_one_or_none()
+        event_status = event_obj.status if event_obj else "unknown"
+    else:
+        # Fall back to database
+        result = await db.execute(
+            select(Vehicle).where(Vehicle.truck_token == x_truck_token)
+        )
+        vehicle = result.scalar_one_or_none()
+        if not vehicle:
+            raise HTTPException(status_code=401, detail="Invalid truck token")
+
+        # Find ANY event registration (not just in_progress)
+        result = await db.execute(
+            select(EventVehicle, Event)
+            .join(Event, EventVehicle.event_id == Event.event_id)
+            .where(EventVehicle.vehicle_id == vehicle.vehicle_id)
+            .order_by(Event.created_at.desc())
+            .limit(1)
+        )
+        row = result.first()
+        if not row:
+            raise HTTPException(
+                status_code=400,
+                detail="Vehicle not registered for any event",
+            )
+
+        event_vehicle, event_obj = row
+        vehicle_id = vehicle.vehicle_id
+        event_id = event_obj.event_id
+        event_status = event_obj.status
+
+        # Cache token for future requests (regardless of event status)
+        await redis_client.cache_truck_token(x_truck_token, vehicle_id, event_id)
+
+    # Update last-seen timestamp
+    now_ms = int(time.time() * 1000)
+    await redis_client.set_vehicle_last_seen(event_id, vehicle_id, now_ms)
+
+    # CLOUD-MANAGE-0: Extract optional edge_url and capabilities from JSON body.
+    # This allows Team Dashboard to discover edge_url before event_id is known.
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    if body and isinstance(body, dict):
+        edge_presence = {
+            "edge_url": body.get("edge_url"),
+            "capabilities": body.get("capabilities", []),
+            "heartbeat_ts": now_ms,
+            "event_id": event_id,
+        }
+        await redis_client.set_edge_presence(vehicle_id, edge_presence)
+
+    # Publish presence event to SSE (optional, for real-time UI updates)
+    await redis_client.publish_event(event_id, "presence", {
+        "vehicle_id": vehicle_id,
+        "ts_ms": now_ms,
+        "status": "online",
+    })
+
+    return {
+        "status": "ok",
+        "vehicle_id": vehicle_id,
+        "event_id": event_id,
+        "event_status": event_status,
+        "server_ts_ms": now_ms,
     }

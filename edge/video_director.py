@@ -77,19 +77,27 @@ class VideoConfig:
 
     def __post_init__(self):
         if self.cameras is None:
-            # Default camera mapping - uses udev symlinks
+            # CAM-CONTRACT-1B: Canonical 4-camera slot mapping using udev symlinks
+            # Slots: main (primary broadcast), cockpit (driver POV), chase (following), suspension (suspension cam)
             self.cameras = {
+                "main": "/dev/argus_cam_main",
+                "cockpit": "/dev/argus_cam_cockpit",
                 "chase": "/dev/argus_cam_chase",
-                "pov": "/dev/argus_cam_pov",
-                "roof": "/dev/argus_cam_roof",
-                "front": "/dev/argus_cam_front",
+                "suspension": "/dev/argus_cam_suspension",
             }
-            # Fallback to standard video devices
+            # Fallback to standard video devices (for dev/testing)
             self.cameras_fallback = {
-                "chase": "/dev/video0",
-                "pov": "/dev/video2",
-                "roof": "/dev/video4",
-                "front": "/dev/video6",
+                "main": "/dev/video0",
+                "cockpit": "/dev/video2",
+                "chase": "/dev/video4",
+                "suspension": "/dev/video6",
+            }
+            # CAM-CONTRACT-1B: Backward compatibility aliases for legacy devices
+            self.camera_aliases = {
+                "pov": "cockpit",
+                "roof": "chase",
+                "front": "suspension",
+                "rear": "suspension",
             }
 
     @classmethod
@@ -121,6 +129,51 @@ STREAM_STATE_PAUSED = "paused"       # Gave up after too many failures (manual r
 
 # Status file for dashboard and scripts to read
 STREAM_STATUS_FILE = "/opt/argus/state/stream_status.json"
+
+# EDGE-PROG-3: Program state file (shared with pit_crew_dashboard.py)
+PROGRAM_STATE_FILE = "/opt/argus/state/program_state.json"
+
+
+def _update_program_state_file(camera: str = None, streaming: bool = None, error: str = None):
+    """
+    EDGE-PROG-3: Update the program state file to sync with pit_crew_dashboard.
+    Only updates the fields that are provided (non-None).
+    """
+    try:
+        # Read existing state
+        state = {
+            'active_camera': 'chase',
+            'streaming': False,
+            'stream_destination': None,
+            'last_switch_at': None,
+            'last_stream_start_at': None,
+            'last_error': None,
+            'updated_at': None,
+        }
+        if os.path.exists(PROGRAM_STATE_FILE):
+            with open(PROGRAM_STATE_FILE, 'r') as f:
+                state.update(json.load(f))
+
+        # Update provided fields
+        now_ms = int(time.time() * 1000)
+        if camera is not None:
+            state['active_camera'] = camera
+            state['last_switch_at'] = now_ms
+        if streaming is not None:
+            state['streaming'] = streaming
+            if streaming:
+                state['last_stream_start_at'] = now_ms
+        if error is not None:
+            state['last_error'] = error
+        state['updated_at'] = now_ms
+
+        # Write back
+        os.makedirs(os.path.dirname(PROGRAM_STATE_FILE), exist_ok=True)
+        with open(PROGRAM_STATE_FILE, 'w') as f:
+            json.dump(state, f, indent=2)
+        logger.debug(f"Updated program state: camera={camera}, streaming={streaming}")
+    except Exception as e:
+        logger.warning(f"Failed to update program state file: {e}")
 
 
 # ============ FFmpeg Process Manager ============
@@ -210,6 +263,14 @@ class FFmpegManager:
             logger.info(f"Stream state: {old_state} -> {new_state}" +
                         (f" ({error})" if error else ""))
         self._write_status_file()
+
+        # EDGE-PROG-3: Sync program state with stream state transitions
+        is_streaming = new_state == STREAM_STATE_ACTIVE
+        _update_program_state_file(
+            camera=self._current_camera,
+            streaming=is_streaming,
+            error=error if error else None
+        )
 
     def _write_status_file(self):
         """EDGE-6: Write stream status JSON for dashboard/scripts."""
@@ -583,6 +644,7 @@ class SSEClient:
         logger.debug(f"SSE event: {event_type} -> {payload}")
 
         if event_type == "camera_switch":
+            # Legacy event format for backwards compatibility
             camera = payload.get("camera_name") or payload.get("camera")
             if camera:
                 logger.info(f"Received camera switch command: {camera}")
@@ -591,6 +653,10 @@ class SSEClient:
                     logger.info(f"Camera switched to: {camera}")
                 else:
                     logger.error(f"Failed to switch to camera: {camera}")
+
+        elif event_type == "edge_command":
+            # PROD-CAM-2: Handle production director commands with ACK
+            await self._handle_edge_command(payload)
 
         elif event_type == "featured_vehicle":
             # We might want to do something when our vehicle is featured
@@ -602,6 +668,106 @@ class SSEClient:
 
         elif event_type == "keepalive":
             logger.debug("SSE keepalive received")
+
+    async def _handle_edge_command(self, payload: dict):
+        """
+        PROD-CAM-2: Handle edge_command events from production director.
+
+        Expected payload format:
+        {
+            "command_id": "fc_xxxx",
+            "command": "set_active_camera",
+            "params": {"camera": "chase"},
+            "vehicle_id": "veh_xxx",
+            "sent_at": "2024-01-01T00:00:00"
+        }
+        """
+        command_id = payload.get("command_id")
+        command = payload.get("command")
+        params = payload.get("params", {})
+        vehicle_id = payload.get("vehicle_id")
+
+        if not command_id or not command:
+            logger.warning(f"Invalid edge_command payload: {payload}")
+            return
+
+        logger.info(f"Received edge_command: {command} (id={command_id})")
+
+        success = False
+        error_message = None
+
+        if command == "set_active_camera":
+            camera = params.get("camera")
+            if not camera:
+                error_message = "Missing camera parameter"
+                logger.error(f"set_active_camera missing camera param: {params}")
+            else:
+                logger.info(f"Switching to camera: {camera}")
+                success = await self.ffmpeg.switch_camera(camera)
+                if success:
+                    # EDGE-PROG-3: Update program state file for Cloud/Pit Crew sync
+                    _update_program_state_file(camera=camera, streaming=True, error=None)
+                else:
+                    error_message = f"Failed to switch to camera '{camera}'"
+                    _update_program_state_file(error=error_message)
+
+        elif command == "set_stream_profile":
+            # STREAM-3: Stream profile switching
+            profile = params.get("profile")
+            if profile:
+                try:
+                    from stream_profiles import save_profile_state
+                    save_profile_state(profile)
+                    # Restart stream with new profile if currently streaming
+                    if self.ffmpeg.is_running and self.ffmpeg.current_camera:
+                        success = await self.ffmpeg.switch_camera(self.ffmpeg.current_camera)
+                    else:
+                        success = True
+                    logger.info(f"Stream profile set to: {profile}")
+                except Exception as e:
+                    error_message = f"Failed to set profile: {e}"
+                    logger.error(error_message)
+            else:
+                error_message = "Missing profile parameter"
+
+        else:
+            logger.warning(f"Unknown edge command: {command}")
+            error_message = f"Unknown command: {command}"
+
+        # Send ACK back to cloud
+        await self._send_command_response(command_id, success, error_message)
+
+    async def _send_command_response(self, command_id: str, success: bool, error: str = None):
+        """
+        PROD-CAM-2: Send command acknowledgment back to cloud.
+
+        POST /api/v1/events/{event_id}/edge/command-response
+        """
+        if not self.config.cloud_url or not self.config.event_id:
+            logger.warning("Cannot send command response: cloud_url or event_id not configured")
+            return
+
+        url = f"{self.config.cloud_url.rstrip('/')}/api/v1/events/{self.config.event_id}/edge/command-response"
+        headers = {
+            "X-Truck-Token": self.config.truck_token,
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "command_id": command_id,
+            "status": "success" if success else "error",
+            "message": error,
+            "data": None,
+        }
+
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(url, json=payload, headers=headers)
+                if response.status_code in (200, 201, 202):
+                    logger.info(f"Command response sent: {command_id} -> {'success' if success else 'failed'}")
+                else:
+                    logger.warning(f"Command response failed: HTTP {response.status_code}")
+        except Exception as e:
+            logger.error(f"Failed to send command response: {e}")
 
     async def _handle_reconnect(self):
         """Handle reconnection with exponential backoff."""

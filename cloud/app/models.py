@@ -229,6 +229,28 @@ class TelemetryData(Base):
     )
 
 
+class PitNote(Base):
+    """
+    Pit crew notes sent from edge devices to race control.
+
+    PIT-NOTES-1: End-to-end notes from pit crew dashboard to control room.
+    """
+    __tablename__ = "pit_notes"
+
+    note_id = Column(String, primary_key=True, default=lambda: generate_id("pn"))
+    event_id = Column(String, ForeignKey("events.event_id", ondelete="CASCADE"), nullable=False)
+    vehicle_id = Column(String, nullable=False)
+    vehicle_number = Column(String)  # Denormalized for display
+    team_name = Column(String)       # Denormalized for display
+    message = Column(Text, nullable=False)
+    timestamp_ms = Column(BigInteger, nullable=False)  # From edge device
+    created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
+
+    __table_args__ = (
+        Index("idx_pit_notes_event", "event_id", timestamp_ms.desc()),
+    )
+
+
 # ============================================
 # SQL Migration Script (for existing databases)
 # ============================================

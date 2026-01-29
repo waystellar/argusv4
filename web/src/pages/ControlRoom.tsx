@@ -108,6 +108,24 @@ interface SwitchConfirmation {
   timestamp: number
 }
 
+// PIT-NOTES-1: Pit notes from edge devices
+interface PitNote {
+  note_id: string
+  event_id: string
+  vehicle_id: string
+  vehicle_number: string | null
+  team_name: string | null
+  message: string
+  timestamp_ms: number
+  created_at: string
+}
+
+interface PitNotesResponse {
+  event_id: string
+  notes: PitNote[]
+  total: number
+}
+
 // PROD-2: Per-vehicle featured camera state from cloud
 interface FeaturedCameraStatus {
   vehicle_id: string
@@ -132,12 +150,12 @@ interface StreamProfileStatus {
   updated_at: string
 }
 
-// Camera name display mapping
+// CAM-CONTRACT-1B: Canonical 4-camera slots
 const CAMERA_LABELS: Record<string, string> = {
+  main: 'Main Cam',
+  cockpit: 'Cockpit',
   chase: 'Chase Cam',
-  pov: 'Driver POV',
-  roof: 'Roof 360',
-  front: 'Front Bumper',
+  suspension: 'Suspension',
 }
 
 // STREAM-3: Stream profile labels for display
@@ -309,7 +327,7 @@ export default function ControlRoom() {
     queryFn: async () => {
       try {
         const data = await api.getLeaderboard(eventId!)
-        return data.entries
+        return Array.isArray(data.entries) ? data.entries : []
       } catch (err) {
         console.warn('[ControlRoom] Failed to fetch leaderboard:', err)
         return []
@@ -317,6 +335,27 @@ export default function ControlRoom() {
     },
     enabled: !!eventId && isAuthenticated,
     refetchInterval: 5000,
+    retry: false,
+  })
+
+  // PIT-NOTES-1: Fetch pit notes for race control
+  const { data: pitNotes } = useQuery({
+    queryKey: ['pit-notes', eventId],
+    queryFn: async () => {
+      try {
+        const res = await fetch(`${API_BASE}/events/${eventId}/pit-notes?limit=20`)
+        if (!res.ok) {
+          console.warn('[ControlRoom] Failed to fetch pit notes:', res.status)
+          return null
+        }
+        return res.json() as Promise<PitNotesResponse>
+      } catch (err) {
+        console.warn('[ControlRoom] Failed to fetch pit notes:', err)
+        return null
+      }
+    },
+    enabled: !!eventId,
+    refetchInterval: 10000,  // Poll every 10s
     retry: false,
   })
 
@@ -1135,11 +1174,11 @@ export default function ControlRoom() {
           <Card variant="default" padding="none" className="flex-1 flex flex-col overflow-hidden">
             <div className="px-ds-4 py-ds-3 border-b border-neutral-800 flex items-center justify-between flex-shrink-0">
               <h2 className="text-ds-heading text-neutral-50">Leaderboard</h2>
-              <Badge variant="neutral" size="sm">{event?.total_laps || '?'} laps</Badge>
+              <Badge variant="neutral" size="sm">Live order</Badge>
             </div>
 
             <div className="flex-1 overflow-y-auto">
-              {!leaderboard || leaderboard.length === 0 ? (
+              {!Array.isArray(leaderboard) || leaderboard.length === 0 ? (
                 <div className="p-ds-4">
                   <EmptyState
                     title="No timing data yet"
@@ -1170,7 +1209,7 @@ export default function ControlRoom() {
               </Badge>
             </div>
             <div className="flex-1 overflow-y-auto">
-              {!edgeStatus || edgeStatus.edges.length === 0 ? (
+              {!edgeStatus || !Array.isArray(edgeStatus.edges) || edgeStatus.edges.length === 0 ? (
                 <div className="p-ds-4">
                   <EmptyState
                     title="No edge devices"
@@ -1210,6 +1249,40 @@ export default function ControlRoom() {
                 title="No active alerts"
                 description="Alert events will appear here when they occur."
               />
+            </div>
+          </Card>
+
+          {/* PIT-NOTES-1: Pit Notes Panel */}
+          <Card variant="default" padding="none" className="flex-shrink-0 max-h-48 overflow-hidden flex flex-col">
+            <div className="px-ds-4 py-ds-3 border-b border-neutral-800 flex items-center justify-between flex-shrink-0">
+              <h2 className="text-ds-heading text-neutral-50">Pit Notes</h2>
+              {pitNotes && pitNotes.total > 0 && (
+                <Badge variant="neutral" size="sm">{pitNotes.total}</Badge>
+              )}
+            </div>
+            <div className="flex-1 overflow-y-auto">
+              {!pitNotes || !Array.isArray(pitNotes.notes) || pitNotes.notes.length === 0 ? (
+                <div className="p-ds-4">
+                  <EmptyState
+                    title="No pit notes"
+                    description="Notes from pit crews will appear here."
+                  />
+                </div>
+              ) : (
+                <div className="divide-y divide-neutral-800">
+                  {pitNotes.notes.slice(0, 10).map((note) => (
+                    <div key={note.note_id} className="px-ds-4 py-ds-2">
+                      <div className="flex items-center justify-between text-ds-caption text-neutral-500 mb-ds-1">
+                        <span className="font-medium text-neutral-300">
+                          #{note.vehicle_number || '?'} {note.team_name || ''}
+                        </span>
+                        <span>{new Date(note.timestamp_ms).toLocaleTimeString()}</span>
+                      </div>
+                      <p className="text-ds-body-sm text-neutral-200 break-words">{note.message}</p>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </Card>
 
@@ -1314,17 +1387,18 @@ function LeaderboardRow({
  * Streaming status badge component
  */
 function StreamingStatusBadge({ status, camera }: { status: string; camera?: string | null }) {
-  const variant = status === 'live' ? 'error' :
-                  status === 'starting' ? 'warning' :
-                  status === 'error' ? 'warning' : 'neutral'
+  const safeStatus = typeof status === 'string' ? status : 'unknown'
+  const variant = safeStatus === 'live' ? 'error' :
+                  safeStatus === 'starting' ? 'warning' :
+                  safeStatus === 'error' ? 'warning' : 'neutral'
 
-  const showDot = status === 'live' || status === 'starting'
-  const showPulse = status === 'live'
+  const showDot = safeStatus === 'live' || safeStatus === 'starting'
+  const showPulse = safeStatus === 'live'
 
   return (
     <Badge variant={variant} size="sm" dot={showDot} pulse={showPulse}>
-      {status.charAt(0).toUpperCase() + status.slice(1)}
-      {camera && status === 'live' && <span className="text-ds-caption opacity-70 ml-ds-1">({camera})</span>}
+      {safeStatus.charAt(0).toUpperCase() + safeStatus.slice(1)}
+      {camera && safeStatus === 'live' && <span className="text-ds-caption opacity-70 ml-ds-1">({camera})</span>}
     </Badge>
   )
 }
@@ -1727,7 +1801,7 @@ function VehicleDrillDownModal({
                       cam.status === 'active' ? 'text-status-error' : 'text-neutral-500'
                     }`}>
                       {cam.status === 'active' && <span className="inline-block w-1.5 h-1.5 rounded-full bg-status-error animate-pulse mr-ds-1" />}
-                      {cam.status.charAt(0).toUpperCase() + cam.status.slice(1)}
+                      {typeof cam.status === 'string' ? cam.status.charAt(0).toUpperCase() + cam.status.slice(1) : 'Unknown'}
                     </div>
                   </div>
                 ))}

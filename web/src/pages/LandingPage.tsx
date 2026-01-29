@@ -25,8 +25,8 @@ export default function LandingPage() {
                 d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
             </svg>
           </div>
-          <h1 className="text-ds-display text-neutral-50 tracking-tight">Argus</h1>
-          <p className="text-neutral-400 mt-ds-2 text-ds-body">Live Race Tracking</p>
+          <h1 className="text-ds-display text-neutral-50 tracking-tight">Race Link Live</h1>
+          <p className="text-neutral-400 mt-ds-2 text-ds-body">Real-time GPS timing and telemetry</p>
         </div>
 
         {/* Tagline */}
@@ -95,7 +95,7 @@ export default function LandingPage() {
       {/* Footer */}
       <div className="p-ds-6 text-center">
         <p className="text-neutral-600 text-ds-body-sm">
-          Powered by Argus Racing Technology
+          Race Link Live
         </p>
       </div>
     </div>

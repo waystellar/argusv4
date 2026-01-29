@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.postgresql import insert  # FIXED: For ON CONFLICT (Issue #9 from audit)
 
 from app.models import Checkpoint, CheckpointCrossing, Vehicle, EventVehicle, Event, VehicleLapState, generate_id
-from app.services.geo import haversine_distance, format_time_delta
+from app.services.geo import haversine_distance, format_time_delta, compute_progress_miles, METERS_PER_MILE
 from app.schemas import (
     CheckpointCrossingResponse,
     LeaderboardEntry,
@@ -184,6 +184,16 @@ async def calculate_leaderboard(
     if not all_vehicles:
         return LeaderboardResponse(event_id=event_id, ts=datetime.utcnow(), entries=[])
 
+    # PROGRESS-1: Get latest positions from Redis (already contain progress_miles)
+    latest_positions = await redis_client.get_latest_positions(event_id)
+
+    # PROGRESS-1: Get course length for response
+    event_result = await db.execute(select(Event).where(Event.event_id == event_id))
+    event_obj = event_result.scalar_one_or_none()
+    course_length_miles = None
+    if event_obj and event_obj.course_distance_m:
+        course_length_miles = round(event_obj.course_distance_m / METERS_PER_MILE, 2)
+
     # Get all crossings for event, ordered by lap (desc), checkpoint (desc), time (asc)
     result = await db.execute(
         select(CheckpointCrossing)
@@ -260,6 +270,8 @@ async def calculate_leaderboard(
         else:
             cp_display = cp_name
 
+        # PROGRESS-1: Get progress from cached position
+        pos = latest_positions.get(vid, {})
         entries.append(
             LeaderboardEntry(
                 position=position,
@@ -271,6 +283,8 @@ async def calculate_leaderboard(
                 last_checkpoint_name=cp_display,
                 delta_to_leader_ms=delta_ms,
                 delta_formatted=format_time_delta(delta_ms),
+                progress_miles=pos.get("progress_miles"),
+                miles_remaining=pos.get("miles_remaining"),
             )
         )
 
@@ -278,6 +292,8 @@ async def calculate_leaderboard(
     start_position = len(entries) + 1
     for i, vid in enumerate(vehicles_without_crossings):
         vehicle = all_vehicles[vid]
+        # PROGRESS-1: Get progress from cached position (vehicle may have GPS but no checkpoint)
+        pos = latest_positions.get(vid, {})
         entries.append(
             LeaderboardEntry(
                 position=start_position + i,
@@ -289,6 +305,8 @@ async def calculate_leaderboard(
                 last_checkpoint_name="Not Started",
                 delta_to_leader_ms=0,
                 delta_formatted="—",  # Em dash for "no data"
+                progress_miles=pos.get("progress_miles"),
+                miles_remaining=pos.get("miles_remaining"),
             )
         )
 
@@ -296,6 +314,7 @@ async def calculate_leaderboard(
         event_id=event_id,
         ts=datetime.utcnow(),
         entries=entries,
+        course_length_miles=course_length_miles,
     )
 
 

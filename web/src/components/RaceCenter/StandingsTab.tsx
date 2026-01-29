@@ -262,6 +262,11 @@ function StandingsRow({
           <div className="text-ds-caption text-neutral-500">
             {entry.last_checkpoint_name || `CP${entry.last_checkpoint}`}
           </div>
+          {entry.miles_remaining != null && (
+            <div className="text-ds-caption text-neutral-400 tabular-nums">
+              {entry.miles_remaining.toFixed(1)} mi remaining
+            </div>
+          )}
         </div>
       </button>
 

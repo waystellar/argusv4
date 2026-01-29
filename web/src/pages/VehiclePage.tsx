@@ -16,12 +16,14 @@ import { useEventStream } from '../hooks/useEventStream'
 import { useCheckpointNotifications } from '../hooks/useCheckpointNotifications'
 import { useEventStore } from '../stores/eventStore'
 import { api } from '../api/client'
+import type { VehiclePosition } from '../api/client'
 import { PageHeader } from '../components/common'
 import ConnectionStatus from '../components/common/ConnectionStatus'
 import YouTubeEmbed from '../components/VehicleDetail/YouTubeEmbed'
-import TelemetryTile, { TelemetryTileSkeleton } from '../components/VehicleDetail/TelemetryTile'
+import TelemetryTile from '../components/VehicleDetail/TelemetryTile'
 import { PositionBadgeSkeleton, VideoSkeleton } from '../components/common/Skeleton'
 import { copyToClipboard } from '../utils/clipboard'
+import Map from '../components/Map/Map'
 
 // PROMPT 4: Stream state interface - single source of truth for racer stream
 interface RacerStreamState {
@@ -48,15 +50,18 @@ interface FanTelemetryResponse {
   last_update_ms: number | null
 }
 
-// Format camera name for display
+// CAM-CONTRACT-1B: Format camera name for display with canonical slots
 function formatCameraName(name: string): string {
   const names: Record<string, string> = {
+    main: 'Main',
+    cockpit: 'Cockpit',
     chase: 'Chase',
-    pov: 'POV',
-    roof: 'Roof',
-    front: 'Front',
-    rear: 'Rear',
-    bumper: 'Bumper',
+    suspension: 'Suspension',
+    // Legacy names for backward compatibility
+    pov: 'Cockpit',
+    roof: 'Chase',
+    front: 'Suspension',
+    rear: 'Suspension',
   }
   return names[name.toLowerCase()] || name.charAt(0).toUpperCase() + name.slice(1)
 }
@@ -80,7 +85,7 @@ interface ExtendedPosition {
   oil_pressure?: number
   fuel_pressure?: number
   heart_rate?: number
-  // NOTE: Suspension fields removed - not currently in use
+  voltage?: number  // FAN-TELEM-1: Battery voltage
 }
 
 export default function VehiclePage() {
@@ -254,7 +259,7 @@ export default function VehiclePage() {
   const handleShare = useCallback(async () => {
     const shareUrl = window.location.href
     const shareTitle = `#${position?.vehicle_number || ''} - ${position?.team_name || 'Live'}`
-    const shareText = `Watch ${shareTitle} live on Argus Racing!`
+    const shareText = `Watch ${shareTitle} live!`
 
     if (navigator.share) {
       try {
@@ -298,6 +303,7 @@ export default function VehiclePage() {
       if (position.oil_pressure !== undefined) data.oil_pressure_psi = position.oil_pressure
       if (position.fuel_pressure !== undefined) data.fuel_pressure_psi = position.fuel_pressure
       if (position.heart_rate !== undefined) data.heart_rate = position.heart_rate
+      if (position.voltage !== undefined) data.voltage = position.voltage  // FAN-TELEM-1
     }
 
     // Override with API data (more reliable, explicit fan-visible fields)
@@ -312,22 +318,43 @@ export default function VehiclePage() {
     return data
   }, [position, fanTelemetry])
 
-  // Check what telemetry categories are available
-  const hasEngineTelemetry = telemetryData.rpm !== undefined ||
-    telemetryData.gear !== undefined ||
-    telemetryData.throttle_pct !== undefined
-  const hasAdvancedTelemetry = telemetryData.coolant_temp_c !== undefined ||
-    telemetryData.oil_pressure_psi !== undefined ||
-    telemetryData.fuel_pressure_psi !== undefined
+  // FAN-TELEM-1: Check if heart rate data is available (only biometrics is conditionally shown)
   const hasHeartRate = telemetryData.heart_rate !== undefined
-
-  // PROMPT 5: Check if team has shared any telemetry with fans
-  const hasFanTelemetry = Object.keys(telemetryData).length > 0
-
-  // FIXED: P1-1 - Determine if we're in initial loading state (no position data yet)
-  const isInitialLoading = !position && isConnected
   // FIXED: P2-3 - Use combined leaderboard entries for loading state
   const isLoadingLeaderboard = leaderboardEntries.length === 0 && !!eventId
+
+  // FAN-VEHICLE-1: Fetch event data to get courseGeoJSON
+  const { data: event } = useQuery({
+    queryKey: ['event', eventId],
+    queryFn: () => api.getEvent(eventId!),
+    enabled: !!eventId,
+  })
+
+  // FAN-VEHICLE-1: Throttled position for map (updates once per minute)
+  const latestPositionRef = useRef<ExtendedPosition | null>(null)
+  const [mapPosition, setMapPosition] = useState<VehiclePosition | null>(null)
+
+  // Update latest position ref on every SSE update
+  useEffect(() => {
+    latestPositionRef.current = position
+  }, [position])
+
+  // Throttle map marker updates to once per minute
+  useEffect(() => {
+    // Initial position
+    if (position && !mapPosition) {
+      setMapPosition(position as VehiclePosition)
+    }
+
+    // Update map position every 60 seconds
+    const interval = setInterval(() => {
+      if (latestPositionRef.current) {
+        setMapPosition(latestPositionRef.current as VehiclePosition)
+      }
+    }, 60000)
+
+    return () => clearInterval(interval)
+  }, [position, mapPosition])
 
   // Screen Wake Lock for Pit Crew mode - keeps screen on while viewing vehicle telemetry
   const wakeLockRef = useRef<WakeLockSentinel | null>(null)
@@ -529,141 +556,125 @@ export default function VehiclePage() {
                 {leaderboardEntry.delta_formatted}
               </div>
               <div className="text-ds-caption text-neutral-400 uppercase tracking-wide">to leader</div>
+              {leaderboardEntry.miles_remaining != null && (
+                <div className="text-ds-caption font-mono text-accent-300 tabular-nums mt-1">
+                  {leaderboardEntry.miles_remaining.toFixed(1)} mi remaining
+                </div>
+              )}
             </div>
           </div>
         ) : null}
 
-        {/* Primary Telemetry - Large tiles for key stats - FIXED: P1-1 - Show skeletons during initial load */}
-        <div className="p-ds-4 space-y-ds-4">
-          {isInitialLoading ? (
-            <>
-              {/* Skeleton tiles for initial loading state */}
-              <div className="grid grid-cols-2 gap-ds-3">
-                <TelemetryTileSkeleton />
-                <TelemetryTileSkeleton />
-              </div>
-              <div className="grid grid-cols-2 gap-ds-3">
-                <TelemetryTileSkeleton small />
-                <TelemetryTileSkeleton small />
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="grid grid-cols-2 gap-ds-3">
-                <TelemetryTile
-                  label="Speed"
-                  value={speedMph ?? '--'}
-                  unit="mph"
-                  thresholdKey="speed_mph"
-                  lastUpdateMs={lastUpdateMs}
-                />
-                <TelemetryTile
-                  label="Heading"
-                  value={position?.heading_deg !== null ? Math.round(position?.heading_deg || 0) : '--'}
-                  unit="deg"
-                  lastUpdateMs={lastUpdateMs}
-                />
-              </div>
+        {/* FAN-VEHICLE-1: Course Map with Throttled Marker */}
+        {mapPosition && event?.course_geojson && (
+          <div id="vehicleCourseMap" className="h-48 md:h-64 relative">
+            <Map
+              positions={[mapPosition]}
+              selectedVehicleId={vehicleId}
+              courseGeoJSON={event.course_geojson}
+            />
+            <div className="absolute bottom-ds-2 left-ds-2 bg-neutral-900/80 backdrop-blur-sm px-ds-2 py-ds-1 rounded-ds-sm text-ds-caption text-neutral-400">
+              Map updates every 60s
+            </div>
+          </div>
+        )}
 
-              {/* GPS Coordinates - Smaller tiles */}
-              <div className="grid grid-cols-2 gap-ds-3">
-                <TelemetryTile
-                  label="Latitude"
-                  value={position?.lat ? position.lat.toFixed(5) : '--'}
-                  unit=""
-                  small
-                  lastUpdateMs={lastUpdateMs}
-                />
-                <TelemetryTile
-                  label="Longitude"
-                  value={position?.lon ? position.lon.toFixed(5) : '--'}
-                  unit=""
-                  small
-                  lastUpdateMs={lastUpdateMs}
-                />
-              </div>
-            </>
-          )}
+        {/* FAN-TELEM-1: Telemetry Panel - Always show categories with "--" placeholders */}
+        <div id="vehicleTelemetry" className="p-ds-4 space-y-ds-4">
+          {/* GPS - Always visible */}
+          <div className="grid grid-cols-2 gap-ds-3">
+            <TelemetryTile
+              label="Speed"
+              value={speedMph ?? '--'}
+              unit="mph"
+              thresholdKey="speed_mph"
+              lastUpdateMs={lastUpdateMs}
+            />
+            <TelemetryTile
+              label="Heading"
+              value={position?.heading_deg != null ? Math.round(position.heading_deg) : '--'}
+              unit="deg"
+              lastUpdateMs={lastUpdateMs}
+            />
+          </div>
 
-          {/* PROMPT 5: Engine Telemetry - Shows only fields allowed by team's sharing policy */}
-          {hasEngineTelemetry && (
-            <>
-              <h3 className="text-ds-caption uppercase tracking-wider text-neutral-400 font-semibold mt-ds-6 mb-ds-2">
-                Engine
-              </h3>
-              <div className="grid grid-cols-2 gap-ds-3">
-                {telemetryData.rpm !== undefined && (
-                  <TelemetryTile
-                    label="RPM"
-                    value={telemetryData.rpm ?? '--'}
-                    unit=""
-                    thresholdKey="rpm"
-                    lastUpdateMs={lastUpdateMs}
-                  />
-                )}
-                {telemetryData.gear !== undefined && (
-                  <TelemetryTile
-                    label="Gear"
-                    value={telemetryData.gear ?? '--'}
-                    unit=""
-                    lastUpdateMs={lastUpdateMs}
-                  />
-                )}
-                {telemetryData.throttle_pct !== undefined && (
-                  <TelemetryTile
-                    label="Throttle"
-                    value={telemetryData.throttle_pct ?? '--'}
-                    unit="%"
-                    small
-                    lastUpdateMs={lastUpdateMs}
-                  />
-                )}
-              </div>
-            </>
-          )}
+          {/* GPS Coordinates - Smaller tiles */}
+          <div className="grid grid-cols-2 gap-ds-3">
+            <TelemetryTile
+              label="Latitude"
+              value={position?.lat ? position.lat.toFixed(5) : '--'}
+              unit=""
+              small
+              lastUpdateMs={lastUpdateMs}
+            />
+            <TelemetryTile
+              label="Longitude"
+              value={position?.lon ? position.lon.toFixed(5) : '--'}
+              unit=""
+              small
+              lastUpdateMs={lastUpdateMs}
+            />
+          </div>
 
-          {/* PROMPT 5: Advanced Telemetry - Coolant, Oil, Fuel */}
-          {hasAdvancedTelemetry && (
-            <>
-              <h3 className="text-ds-caption uppercase tracking-wider text-neutral-400 font-semibold mt-ds-6 mb-ds-2">
-                Engine Vitals
-              </h3>
-              <div className="grid grid-cols-2 gap-ds-3">
-                {telemetryData.coolant_temp_c !== undefined && (
-                  <TelemetryTile
-                    label="Coolant"
-                    value={telemetryData.coolant_temp_c ?? '--'}
-                    unit="°C"
-                    thresholdKey="coolant_temp_c"
-                    small
-                    lastUpdateMs={lastUpdateMs}
-                  />
-                )}
-                {telemetryData.oil_pressure_psi !== undefined && (
-                  <TelemetryTile
-                    label="Oil Press"
-                    value={telemetryData.oil_pressure_psi ?? '--'}
-                    unit="psi"
-                    thresholdKey="oil_pressure_psi"
-                    small
-                    lastUpdateMs={lastUpdateMs}
-                  />
-                )}
-                {telemetryData.fuel_pressure_psi !== undefined && (
-                  <TelemetryTile
-                    label="Fuel Press"
-                    value={telemetryData.fuel_pressure_psi ?? '--'}
-                    unit="psi"
-                    thresholdKey="fuel_pressure_psi"
-                    small
-                    lastUpdateMs={lastUpdateMs}
-                  />
-                )}
-              </div>
-            </>
-          )}
+          {/* FAN-TELEM-1: Engine Telemetry - Always show with "--" placeholders */}
+          <h3 className="text-ds-caption uppercase tracking-wider text-neutral-400 font-semibold mt-ds-6 mb-ds-2">
+            Engine
+          </h3>
+          <div className="grid grid-cols-2 gap-ds-3">
+            <TelemetryTile
+              label="RPM"
+              value={telemetryData.rpm ?? '--'}
+              unit=""
+              thresholdKey="rpm"
+              lastUpdateMs={lastUpdateMs}
+            />
+            <TelemetryTile
+              label="Gear"
+              value={telemetryData.gear ?? '--'}
+              unit=""
+              lastUpdateMs={lastUpdateMs}
+            />
+          </div>
 
-          {/* PROMPT 5: Driver Biometrics - Heart Rate */}
+          {/* FAN-TELEM-1: Engine Vitals - Always show with "--" placeholders */}
+          <h3 className="text-ds-caption uppercase tracking-wider text-neutral-400 font-semibold mt-ds-6 mb-ds-2">
+            Engine Vitals
+          </h3>
+          <div className="grid grid-cols-2 gap-ds-3">
+            <TelemetryTile
+              label="Coolant"
+              value={telemetryData.coolant_temp_c ?? '--'}
+              unit="°C"
+              thresholdKey="coolant_temp_c"
+              small
+              lastUpdateMs={lastUpdateMs}
+            />
+            <TelemetryTile
+              label="Oil Press"
+              value={telemetryData.oil_pressure_psi ?? '--'}
+              unit="psi"
+              thresholdKey="oil_pressure_psi"
+              small
+              lastUpdateMs={lastUpdateMs}
+            />
+            <TelemetryTile
+              label="Fuel Press"
+              value={telemetryData.fuel_pressure_psi ?? '--'}
+              unit="psi"
+              thresholdKey="fuel_pressure_psi"
+              small
+              lastUpdateMs={lastUpdateMs}
+            />
+            <TelemetryTile
+              label="Voltage"
+              value={telemetryData.voltage ?? '--'}
+              unit="V"
+              small
+              lastUpdateMs={lastUpdateMs}
+            />
+          </div>
+
+          {/* Driver Biometrics - Only show if team has shared heart rate */}
           {hasHeartRate && (
             <>
               <h3 className="text-ds-caption uppercase tracking-wider text-neutral-400 font-semibold mt-ds-6 mb-ds-2">
@@ -677,18 +688,6 @@ export default function VehiclePage() {
                 lastUpdateMs={lastUpdateMs}
               />
             </>
-          )}
-
-          {/* PROMPT 5: Message when no extended telemetry is shared */}
-          {!isInitialLoading && !hasFanTelemetry && position && (
-            <div className="mt-ds-6 bg-neutral-800/50 border border-neutral-700 rounded-ds-lg p-ds-4 text-center">
-              <div className="text-neutral-400 text-ds-body-sm">
-                Extended telemetry not available
-              </div>
-              <div className="text-neutral-500 text-ds-caption mt-ds-1">
-                Team has not enabled telemetry sharing for fans
-              </div>
-            </div>
           )}
         </div>
 

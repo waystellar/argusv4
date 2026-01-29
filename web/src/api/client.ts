@@ -26,6 +26,8 @@ export interface VehiclePosition {
   heading_deg: number | null
   last_checkpoint: number | null
   last_update_ms: number
+  progress_miles: number | null
+  miles_remaining: number | null
 }
 
 export interface LeaderboardEntry {
@@ -38,12 +40,15 @@ export interface LeaderboardEntry {
   last_checkpoint_name: string | null
   delta_to_leader_ms: number
   delta_formatted: string
+  progress_miles: number | null
+  miles_remaining: number | null
 }
 
 export interface Leaderboard {
   event_id: string
   ts: string
   entries: LeaderboardEntry[]
+  course_length_miles: number | null
 }
 
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {

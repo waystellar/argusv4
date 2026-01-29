@@ -173,6 +173,8 @@ class VehiclePosition(BaseModel):
     heading_deg: Optional[float]
     last_checkpoint: Optional[int]
     last_update_ms: int
+    progress_miles: Optional[float] = None  # PROGRESS-1: distance along course
+    miles_remaining: Optional[float] = None  # PROGRESS-1: distance to finish
 
 
 class LatestPositionsResponse(BaseModel):
@@ -195,6 +197,8 @@ class LeaderboardEntry(BaseModel):
     last_checkpoint_name: Optional[str]
     delta_to_leader_ms: int
     delta_formatted: str
+    progress_miles: Optional[float] = None  # PROGRESS-1: distance along course
+    miles_remaining: Optional[float] = None  # PROGRESS-1: distance to finish
 
 
 class LeaderboardResponse(BaseModel):
@@ -202,6 +206,7 @@ class LeaderboardResponse(BaseModel):
     event_id: str
     ts: datetime
     entries: list[LeaderboardEntry]
+    course_length_miles: Optional[float] = None  # PROGRESS-1: total course length
 
 
 # ============ Splits ============
@@ -247,6 +252,8 @@ class SSEPositionEvent(BaseModel):
     speed_mps: Optional[float]
     heading_deg: Optional[float]
     ts_ms: int
+    progress_miles: Optional[float] = None  # PROGRESS-1
+    miles_remaining: Optional[float] = None  # PROGRESS-1
 
 
 class SSECheckpointEvent(BaseModel):

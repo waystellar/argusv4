@@ -50,9 +50,14 @@ import json
 import logging
 import os
 import secrets
+import socket
 import subprocess
 import sys
 import time
+
+# Ensure sibling modules (e.g. stream_profiles.py) are importable when
+# running from /opt/argus/bin/ or any other installed location.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Dict, Any, Set
@@ -83,6 +88,27 @@ logging.basicConfig(
 logger = logging.getLogger("pit_dashboard")
 
 
+def _detect_lan_ip() -> str:
+    """EDGE-URL-1: Detect this device's LAN IP address for Pit Crew Portal URL.
+
+    Uses UDP connect trick (no actual traffic sent) to find the interface
+    the OS would use to reach an external address. Falls back to hostname lookup.
+    """
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.1)
+        # Connect to a non-routable address - no traffic is actually sent
+        s.connect(("10.255.255.255", 1))
+        ip = s.getsockname()[0]
+        s.close()
+        return ip
+    except Exception:
+        try:
+            return socket.gethostbyname(socket.gethostname())
+        except Exception:
+            return "127.0.0.1"
+
+
 # ============ Configuration ============
 
 # Default config file location - can be overridden with env var
@@ -93,6 +119,12 @@ CONFIG_FILE_PATH = os.environ.get(
 
 # Fallback for development (in current directory)
 CONFIG_FILE_PATH_DEV = os.path.join(os.path.dirname(__file__), "pit_dashboard_config.json")
+
+# PIT-FUEL-2: Fuel tank capacity constants
+# Single source of truth — user can configure 1..250 gal; 95 is just the default.
+DEFAULT_TANK_CAPACITY_GAL = 95.0  # Default for new installs; user can change to anything 1-250
+MIN_TANK_CAPACITY_GAL = 1.0
+MAX_TANK_CAPACITY_GAL = 250.0  # Hard upper bound for user-selectable capacity
 
 
 def hash_password(password: str) -> str:
@@ -159,6 +191,9 @@ class DashboardConfig:
     # YouTube streaming configuration
     youtube_stream_key: str = ""  # Stream key for FFmpeg to push to YouTube
     youtube_live_url: str = ""    # Public URL where fans can watch the stream
+
+    # PROGRESS-3: Leaderboard poll interval (seconds)
+    leaderboard_poll_seconds: int = 60
 
     @property
     def is_configured(self) -> bool:
@@ -239,6 +274,8 @@ class DashboardConfig:
             config.vehicle_number = os.environ["ARGUS_VEHICLE_NUMBER"]
         if os.environ.get("ARGUS_PIT_PORT"):
             config.port = int(os.environ["ARGUS_PIT_PORT"])
+        if os.environ.get("ARGUS_LEADERBOARD_POLL_SECONDS"):
+            config.leaderboard_poll_seconds = int(os.environ["ARGUS_LEADERBOARD_POLL_SECONDS"])
 
         return config
 
@@ -278,24 +315,29 @@ class SessionManager:
 
 @dataclass
 class TelemetryState:
-    """Current telemetry values."""
-    # Engine
-    rpm: float = 0.0
-    coolant_temp: float = 0.0
-    oil_pressure: float = 0.0
-    oil_temp: float = 0.0  # ADDED: Oil temperature (°C)
-    fuel_pressure: float = 0.0
-    throttle_pct: float = 0.0
-    engine_load: float = 0.0
-    intake_air_temp: float = 0.0  # ADDED: Intake air temperature (°C)
-    boost_pressure: float = 0.0  # ADDED: Boost/manifold pressure (PSI)
-    battery_voltage: float = 0.0  # ADDED: Battery voltage (V)
-    fuel_level_pct: float = 0.0  # ADDED: Fuel level percentage
+    """Current telemetry values.
 
-    # Vehicle
-    speed_mps: float = 0.0
-    gear: int = 0
-    trans_temp: float = 0.0  # ADDED: Transmission temperature (°C)
+    PIT-CAN-1: CAN-sourced temperature/pressure fields are Optional[float] = None
+    to prevent phantom values (e.g., 32°F from 0°C) when CAN data is not present.
+    UI displays "--" for None values.
+    """
+    # Engine - PIT-CAN-1: CAN-sourced fields default to None (not 0.0)
+    rpm: Optional[float] = None
+    coolant_temp: Optional[float] = None  # °C, None until CAN data received
+    oil_pressure: Optional[float] = None  # PSI, None until CAN data received
+    oil_temp: Optional[float] = None  # °C, None until CAN data received
+    fuel_pressure: Optional[float] = None
+    throttle_pct: Optional[float] = None
+    engine_load: Optional[float] = None
+    intake_air_temp: Optional[float] = None  # °C
+    boost_pressure: Optional[float] = None  # PSI
+    battery_voltage: Optional[float] = None  # V
+    fuel_level_pct: Optional[float] = None  # %
+
+    # Vehicle - PIT-CAN-1: CAN-sourced fields default to None
+    speed_mps: Optional[float] = None
+    gear: Optional[int] = None
+    trans_temp: Optional[float] = None  # °C
 
     # NOTE: Suspension fields removed - not currently in use
 
@@ -318,10 +360,23 @@ class TelemetryState:
     delta_to_leader_ms: int = 0  # Time behind leader in ms
     lap_number: int = 0  # Current lap number
 
+    # PROGRESS-3: Course progress + competitor tracking
+    progress_miles: Optional[float] = None  # Distance along course (miles)
+    miles_remaining: Optional[float] = None  # Distance to finish (miles)
+    course_length_miles: Optional[float] = None  # Total course length (miles)
+    competitor_ahead: Optional[dict] = None  # {vehicle_number, team_name, progress_miles, miles_remaining, gap_miles}
+    competitor_behind: Optional[dict] = None  # Same structure
+
     # Status
     last_update_ms: int = 0
     cloud_connected: bool = False
+    # EDGE-CLOUD-1: Granular cloud connection detail for banner display
+    # Values: "not_configured", "healthy", "event_not_live", "unreachable", "auth_rejected"
+    cloud_detail: str = "not_configured"
     current_camera: str = "unknown"
+
+    # EDGE-STATUS-1: Boot timestamp for yellow/red distinction during startup
+    boot_ts_ms: int = 0
 
     # EDGE-3: Device status per subsystem
     # Values: "connected", "missing", "simulated", "timeout", "unknown"
@@ -330,22 +385,30 @@ class TelemetryState:
     ant_device_status: str = "unknown"
 
     def to_dict(self) -> dict:
-        """Convert to JSON-serializable dict."""
+        """Convert to JSON-serializable dict.
+
+        PIT-CAN-1: CAN-sourced fields return None (not 0) when no data present.
+        UI displays "--" for None values instead of phantom 32°F.
+        """
+        # PIT-CAN-1: Helper to safely round Optional[float]
+        def safe_round(val: Optional[float], digits: int) -> Optional[float]:
+            return round(val, digits) if val is not None else None
+
         return {
-            "rpm": round(self.rpm, 0),
-            "coolant_temp": round(self.coolant_temp, 1),
-            "oil_pressure": round(self.oil_pressure, 1),
-            "oil_temp": round(self.oil_temp, 1),  # ADDED
-            "fuel_pressure": round(self.fuel_pressure, 1),
-            "throttle_pct": round(self.throttle_pct, 1),
-            "engine_load": round(self.engine_load, 1),
-            "intake_air_temp": round(self.intake_air_temp, 1),  # ADDED
-            "boost_pressure": round(self.boost_pressure, 1),  # ADDED
-            "battery_voltage": round(self.battery_voltage, 1),  # ADDED
-            "fuel_level_pct": round(self.fuel_level_pct, 1),  # ADDED
-            "trans_temp": round(self.trans_temp, 1),  # ADDED
-            "speed_mph": round(self.speed_mps * 2.237, 1),  # m/s to mph
-            "speed_mps": round(self.speed_mps, 2),
+            "rpm": safe_round(self.rpm, 0),
+            "coolant_temp": safe_round(self.coolant_temp, 1),
+            "oil_pressure": safe_round(self.oil_pressure, 1),
+            "oil_temp": safe_round(self.oil_temp, 1),
+            "fuel_pressure": safe_round(self.fuel_pressure, 1),
+            "throttle_pct": safe_round(self.throttle_pct, 1),
+            "engine_load": safe_round(self.engine_load, 1),
+            "intake_air_temp": safe_round(self.intake_air_temp, 1),
+            "boost_pressure": safe_round(self.boost_pressure, 1),
+            "battery_voltage": safe_round(self.battery_voltage, 1),
+            "fuel_level_pct": safe_round(self.fuel_level_pct, 1),
+            "trans_temp": safe_round(self.trans_temp, 1),
+            "speed_mph": safe_round(self.speed_mps * 2.237, 1) if self.speed_mps is not None else None,
+            "speed_mps": safe_round(self.speed_mps, 2),
             "gear": self.gear,
             # NOTE: Suspension fields removed - not currently in use
             "lat": self.lat,
@@ -362,13 +425,22 @@ class TelemetryState:
             "delta_to_leader_ms": self.delta_to_leader_ms,
             "lap_number": self.lap_number,
             "cloud_connected": self.cloud_connected,
+            "cloud_detail": self.cloud_detail,
             "current_camera": self.current_camera,
             "last_update_ms": self.last_update_ms,
             "ts": int(time.time() * 1000),
+            # EDGE-STATUS-1: Boot timestamp for yellow/red distinction
+            "boot_ts_ms": self.boot_ts_ms,
             # EDGE-3: Device status per subsystem
             "gps_device_status": self.gps_device_status,
             "can_device_status": self.can_device_status,
             "ant_device_status": self.ant_device_status,
+            # PROGRESS-3: Course progress + competitor tracking
+            "progress_miles": self.progress_miles,
+            "miles_remaining": self.miles_remaining,
+            "course_length_miles": self.course_length_miles,
+            "competitor_ahead": self.competitor_ahead,
+            "competitor_behind": self.competitor_behind,
         }
 
 
@@ -382,11 +454,11 @@ DASHBOARD_HTML = '''
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-    <title>Argus Pit Crew Dashboard</title>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <title>Pit Crew Dashboard</title>
+    <script nonce="__CSP_NONCE__" src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <!-- Leaflet.js for Course Map (Feature 4) -->
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script nonce="__CSP_NONCE__" src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <style>
         :root {
             --bg-primary: #0a0a0a;
@@ -814,7 +886,7 @@ DASHBOARD_HTML = '''
             50% { opacity: 0.3; }
         }
 
-        /* Offline indicator */
+        /* Offline indicator — EDGE-CLOUD-1: supports multiple states */
         .offline-banner {
             display: none;
             background: var(--warning);
@@ -825,6 +897,8 @@ DASHBOARD_HTML = '''
             font-weight: 600;
         }
         .offline-banner.active { display: block; }
+        .offline-banner.info { background: #2196F3; color: #fff; }
+        .offline-banner.error { background: var(--danger); color: #fff; }
 
         /* Pit notes */
         .pit-notes {
@@ -864,6 +938,59 @@ DASHBOARD_HTML = '''
         }
         .quick-note-btn:hover { background: var(--accent-blue); }
         .quick-note-btn.danger { background: var(--danger); }
+
+        /* PIT-SHARING-UI-1: Generic button classes for Team tab */
+        .btn {
+            padding: 10px 16px;
+            background: var(--accent-blue);
+            border: none;
+            border-radius: 6px;
+            color: white;
+            font-size: 0.85rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: opacity 0.15s;
+        }
+        .btn:hover { opacity: 0.9; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-secondary {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+        }
+        .btn-secondary:hover { background: var(--border); }
+
+        /* PIT-VIS-0: Fan visibility toggle buttons */
+        .vis-btn {
+            background: var(--bg-tertiary);
+            color: var(--text-secondary);
+            border: 2px solid transparent;
+            transition: background 0.15s, border-color 0.15s, color 0.15s;
+        }
+        .vis-btn:hover { opacity: 0.9; }
+        .vis-btn.vis-on {
+            background: var(--success);
+            color: #000;
+            border-color: var(--success);
+            font-weight: 700;
+        }
+        .vis-btn.vis-off {
+            background: var(--danger);
+            color: #fff;
+            border-color: var(--danger);
+            font-weight: 700;
+        }
+
+        /* PIT-SHARING-UI-1: Badge for status indicators */
+        .badge {
+            display: inline-block;
+            padding: 4px 10px;
+            border-radius: 12px;
+            font-size: 0.7rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+        }
+
         .send-note-btn {
             padding: 12px 20px;
             background: var(--accent-blue);
@@ -1243,9 +1370,16 @@ DASHBOARD_HTML = '''
             padding: 3px 8px;
             border-radius: 4px;
         }
+        /* PIT-SVC-2: Unified service status colors */
+        .service-status.ok { background: rgba(34, 197, 94, 0.2); color: var(--success); }
         .service-status.running { background: rgba(34, 197, 94, 0.2); color: var(--success); }
+        .service-status.warn { background: rgba(245, 158, 11, 0.2); color: var(--warning); }
+        .service-status.error { background: rgba(239, 68, 68, 0.2); color: var(--danger); }
         .service-status.stopped { background: rgba(239, 68, 68, 0.2); color: var(--danger); }
+        .service-status.off { background: rgba(100, 116, 139, 0.2); color: var(--text-muted); }
         .service-status.inactive { background: rgba(100, 116, 139, 0.2); color: var(--text-muted); }
+        .service-status.unknown { background: rgba(100, 116, 139, 0.2); color: var(--text-muted); }
+        .service-detail { font-size: 0.65rem; color: var(--text-muted); margin-top: 2px; }
 
         /* Screenshot Grid Styles (Feature 1: Stream Control) */
         .screenshot-grid {
@@ -2103,23 +2237,23 @@ DASHBOARD_HTML = '''
 <body>
     <!-- Critical Alerts Banner -->
     <div class="alerts-banner" id="alertsBanner">
-        <span class="alert-icon">⚠️</span>
+        <span class="alert-icon">!</span>
         <span id="alertText">SYSTEM ALERT</span>
     </div>
 
     <!-- Offline Banner -->
     <div class="offline-banner" id="offlineBanner">
-        📡 Cloud connection lost - Data buffered locally
+        Cloud connection lost - Data buffered locally
     </div>
 
     <!-- Header -->
     <div class="header">
-        <h1>🏁 Pit Crew</h1>
+        <h1>Pit Crew</h1>
         <div class="header-right">
             <span class="vehicle-num" id="vehicleNum">#---</span>
-            <button class="header-btn active" id="voiceAlertBtn" onclick="toggleVoiceAlerts()" title="Voice Alerts">🔊</button>
-            <a href="/settings" class="header-btn" title="Settings">⚙️</a>
-            <button class="header-btn" onclick="logout()" title="Logout">🚪</button>
+            <button class="header-btn active" id="voiceAlertBtn" data-click="toggleVoiceAlerts" title="Voice Alerts">Voice</button>
+            <a href="/settings" class="header-btn" title="Settings">Settings</a>
+            <button class="header-btn" data-click="logout" title="Logout">Logout</button>
         </div>
     </div>
 
@@ -2157,39 +2291,30 @@ DASHBOARD_HTML = '''
     <!-- Tab Navigation -->
     <nav class="tab-nav">
         <button class="tab-btn active" data-tab="engine">
-            <span class="tab-icon">🔧</span>
             Engine
         </button>
         <button class="tab-btn" data-tab="vehicle">
-            <span class="tab-icon">🚗</span>
             Vehicle
         </button>
         <button class="tab-btn" data-tab="cameras">
-            <span class="tab-icon">📹</span>
             Cameras
         </button>
         <button class="tab-btn" data-tab="driver">
-            <span class="tab-icon">👤</span>
             Driver
         </button>
         <button class="tab-btn" data-tab="comms">
-            <span class="tab-icon">📡</span>
             Comms
         </button>
         <button class="tab-btn" data-tab="race">
-            <span class="tab-icon">🏁</span>
             Race
         </button>
         <button class="tab-btn" data-tab="course">
-            <span class="tab-icon">🗺️</span>
             Course
         </button>
         <button class="tab-btn" data-tab="team">
-            <span class="tab-icon">👁️</span>
             Team
         </button>
         <button class="tab-btn" data-tab="devices">
-            <span class="tab-icon">🔌</span>
             Devices
         </button>
     </nav>
@@ -2251,53 +2376,45 @@ DASHBOARD_HTML = '''
         <!-- Engine Vitals Grid - 2 rows of 4 -->
         <div class="card">
             <div class="card-header">
-                <h2>🔧 Engine Vitals</h2>
+                <h2>Engine Vitals</h2>
             </div>
             <div class="grid-4">
                 <div class="gauge" id="coolantGauge">
-                    <div class="gauge-icon">🌡️</div>
                     <div class="label">Coolant</div>
                     <div class="value"><span id="coolantValue">0</span>°F</div>
                     <div class="gauge-bar"><div class="gauge-fill" id="coolantFill"></div></div>
                 </div>
                 <div class="gauge" id="oilPressGauge">
-                    <div class="gauge-icon">🛢️</div>
                     <div class="label">Oil PSI</div>
                     <div class="value"><span id="oilValue">0</span></div>
                     <div class="gauge-bar"><div class="gauge-fill" id="oilFill"></div></div>
                 </div>
                 <div class="gauge" id="oilTempGauge">
-                    <div class="gauge-icon">🔥</div>
                     <div class="label">Oil Temp</div>
                     <div class="value"><span id="oilTempValue">--</span>°F</div>
                     <div class="gauge-bar"><div class="gauge-fill" id="oilTempFill"></div></div>
                 </div>
                 <div class="gauge" id="fuelPressGauge">
-                    <div class="gauge-icon">⛽</div>
                     <div class="label">Fuel PSI</div>
                     <div class="value"><span id="fuelValue">0</span></div>
                     <div class="gauge-bar"><div class="gauge-fill" id="fuelFill"></div></div>
                 </div>
                 <div class="gauge" id="throttleGauge">
-                    <div class="gauge-icon">🎚️</div>
                     <div class="label">Throttle</div>
                     <div class="value"><span id="throttleValue">0</span>%</div>
                     <div class="gauge-bar"><div class="gauge-fill" id="throttleFill"></div></div>
                 </div>
                 <div class="gauge" id="intakeTempGauge">
-                    <div class="gauge-icon">💨</div>
                     <div class="label">IAT</div>
                     <div class="value"><span id="intakeTempValue">--</span>°F</div>
                     <div class="gauge-bar"><div class="gauge-fill" id="iatFill"></div></div>
                 </div>
                 <div class="gauge" id="boostGauge">
-                    <div class="gauge-icon">📈</div>
                     <div class="label">Boost</div>
                     <div class="value"><span id="boostValue">--</span> PSI</div>
                     <div class="gauge-bar"><div class="gauge-fill" id="boostFill"></div></div>
                 </div>
                 <div class="gauge" id="batteryGauge">
-                    <div class="gauge-icon">🔋</div>
                     <div class="label">Battery</div>
                     <div class="value"><span id="batteryValue">--</span>V</div>
                     <div class="gauge-bar"><div class="gauge-fill" id="batteryFill"></div></div>
@@ -2308,7 +2425,7 @@ DASHBOARD_HTML = '''
         <!-- RPM & Throttle History Chart -->
         <div class="card">
             <div class="card-header">
-                <h2>📊 RPM & Throttle History</h2>
+                <h2>RPM & Throttle History</h2>
                 <span class="chart-legend">
                     <span class="legend-item"><span class="legend-color rpm"></span>RPM</span>
                     <span class="legend-item"><span class="legend-color throttle"></span>Throttle</span>
@@ -2322,7 +2439,7 @@ DASHBOARD_HTML = '''
         <!-- Fuel Level -->
         <div class="card">
             <div class="card-header">
-                <h2>⛽ Fuel Level</h2>
+                <h2>Fuel Level</h2>
                 <span id="fuelLevelPct">--</span>%
             </div>
             <div class="fuel-level-bar">
@@ -2363,9 +2480,9 @@ DASHBOARD_HTML = '''
                     <span id="gpsLat">0.000000</span>, <span id="gpsLon">0.000000</span>
                 </div>
                 <div class="gps-meta">
-                    <span>🛰️ <span id="gpsSats">0</span> sats</span>
-                    <span>📏 <span id="gpsHdop">--</span> HDOP</span>
-                    <span>⛰️ <span id="gpsAlt">--</span>m</span>
+                    <span><span id="gpsSats">0</span> sats</span>
+                    <span><span id="gpsHdop">--</span> HDOP</span>
+                    <span><span id="gpsAlt">--</span>m alt</span>
                 </div>
             </div>
         </div>
@@ -2377,28 +2494,30 @@ DASHBOARD_HTML = '''
         <!-- Stream Control Header -->
         <div class="card">
             <div class="card-header">
-                <h2>🎥 Stream Control</h2>
+                <h2>Stream Control</h2>
                 <div style="display:flex; gap:8px; align-items:center;">
                     <span id="streamStatusBadge" class="stream-status-badge idle">IDLE</span>
-                    <button class="quick-note-btn" onclick="refreshAllScreenshots()" id="refreshScreenshotsBtn">🔄 Refresh</button>
+                    <button class="quick-note-btn" data-click="refreshAllScreenshots" id="refreshScreenshotsBtn">Refresh</button>
                 </div>
             </div>
             <!-- Streaming Controls -->
             <div class="stream-controls" style="padding:12px 0; border-bottom:1px solid var(--bg-tertiary); margin-bottom:12px;">
                 <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
-                    <button id="startStreamBtn" class="stream-action-btn start" onclick="startStream()">
-                        ▶️ Start Stream
+                    <button id="startStreamBtn" class="stream-action-btn start" data-click="startStream">
+                        Start Stream
                     </button>
-                    <button id="stopStreamBtn" class="stream-action-btn stop" onclick="stopStream()" style="display:none;">
-                        ⏹️ Stop Stream
+                    <button id="stopStreamBtn" class="stream-action-btn stop" data-click="stopStream" style="display:none;">
+                        Stop Stream
                     </button>
-                    <select id="streamCameraSelect" onchange="handleCameraSelectChange(this.value)" style="padding:8px 12px; border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); border:none;">
+                    <!-- CAM-CONTRACT-0: Canonical 4-camera slots -->
+                    <select id="streamCameraSelect" data-change-val="handleCameraSelectChange" style="padding:8px 12px; border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); border:none;">
+                        <option value="main">Main Cam</option>
+                        <option value="cockpit">Cockpit</option>
                         <option value="chase">Chase Cam</option>
-                        <option value="pov">Driver POV</option>
-                        <option value="roof">Roof Cam</option>
-                        <option value="front">Front Cam</option>
+                        <option value="suspension">Suspension</option>
                     </select>
                     <span id="streamError" style="color:var(--danger); font-size:0.8rem; display:none;"></span>
+                    <span id="streamConfigWarning" style="color:var(--accent-yellow, #f0ad4e); font-size:0.8rem; display:none;">No YouTube stream key — configure in Settings</span>
                 </div>
                 <div id="streamInfo" style="margin-top:8px; font-size:0.8rem; color:var(--text-muted); display:none;">
                     <span>Active Camera: <strong id="activeStreamCamera">--</strong></span>
@@ -2411,14 +2530,14 @@ DASHBOARD_HTML = '''
             <div id="streamQualitySection" style="padding:12px 0; border-bottom:1px solid var(--bg-tertiary); margin-bottom:12px;">
                 <div style="display:flex; gap:12px; align-items:center; flex-wrap:wrap;">
                     <span style="font-size:0.8rem; color:var(--text-muted); font-weight:600;">Stream Quality</span>
-                    <select id="streamProfileSelect" onchange="handleProfileChange(this.value)" style="padding:6px 10px; border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); border:none; font-size:0.85rem;">
+                    <select id="streamProfileSelect" data-change-val="handleProfileChange" style="padding:6px 10px; border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); border:none; font-size:0.85rem;">
                         <option value="1080p30">1080p (4500k)</option>
                         <option value="720p30">720p (2500k)</option>
                         <option value="480p30">480p (1200k)</option>
                         <option value="360p30">360p (800k)</option>
                     </select>
                     <label style="display:flex; align-items:center; gap:6px; font-size:0.8rem; color:var(--text-muted); cursor:pointer;">
-                        <input type="checkbox" id="streamAutoToggle" onchange="handleAutoToggle(this.checked)" style="accent-color:var(--accent); width:16px; height:16px; cursor:pointer;" />
+                        <input type="checkbox" id="streamAutoToggle" data-change-bool="handleAutoToggle" style="accent-color:var(--accent); width:16px; height:16px; cursor:pointer;" />
                         Auto
                     </label>
                 </div>
@@ -2437,97 +2556,97 @@ DASHBOARD_HTML = '''
             </div>
         </div>
 
-        <!-- Camera Screenshots Grid - 2x2 layout -->
+        <!-- CAM-CONTRACT-0: Camera Screenshots Grid - 2x2 layout with canonical 4 slots -->
         <div class="screenshot-grid">
-            <!-- Chase Cam -->
-            <div class="screenshot-card" id="screenshot-chase">
+            <!-- Main Cam (Primary Broadcast) -->
+            <div class="screenshot-card" id="screenshot-main">
                 <div class="screenshot-header">
-                    <span class="screenshot-title">🎬 Chase Cam</span>
-                    <span class="screenshot-status-badge" id="chase-badge">Offline</span>
+                    <span class="screenshot-title">Main Cam</span>
+                    <span class="screenshot-status-badge" id="main-badge">Offline</span>
                 </div>
-                <div class="screenshot-container" onclick="enlargeScreenshot('chase')">
-                    <img id="screenshot-img-chase" src="" alt="Chase Camera" class="screenshot-img" onerror="this.style.display='none'">
-                    <div class="screenshot-placeholder" id="placeholder-chase">
-                        <div class="placeholder-icon">📹</div>
+                <div class="screenshot-container" data-click="enlargeScreenshot" data-arg="main">
+                    <img id="screenshot-img-main" src="" alt="Main Camera" class="screenshot-img" data-hide-error>
+                    <div class="screenshot-placeholder" id="placeholder-main">
+                        <div class="placeholder-icon">--</div>
                         <div class="placeholder-text">No Feed</div>
                     </div>
                     <div class="screenshot-overlay">
-                        <span class="screenshot-live-badge" id="chase-live-badge" style="display:none;">🔴 LIVE</span>
+                        <span class="screenshot-live-badge" id="main-live-badge" style="display:none;">LIVE</span>
+                    </div>
+                </div>
+                <div class="screenshot-footer">
+                    <span class="screenshot-res" id="main-resolution">--</span>
+                    <span class="screenshot-age" id="main-age">--</span>
+                    <button class="screenshot-capture-btn" data-click="captureScreenshot" data-arg="main" title="Manual capture">Capture</button>
+                </div>
+            </div>
+
+            <!-- Cockpit Cam (Driver POV) -->
+            <div class="screenshot-card" id="screenshot-cockpit">
+                <div class="screenshot-header">
+                    <span class="screenshot-title">Cockpit</span>
+                    <span class="screenshot-status-badge" id="cockpit-badge">Offline</span>
+                </div>
+                <div class="screenshot-container" data-click="enlargeScreenshot" data-arg="cockpit">
+                    <img id="screenshot-img-cockpit" src="" alt="Cockpit Camera" class="screenshot-img" data-hide-error>
+                    <div class="screenshot-placeholder" id="placeholder-cockpit">
+                        <div class="placeholder-icon">--</div>
+                        <div class="placeholder-text">No Feed</div>
+                    </div>
+                    <div class="screenshot-overlay">
+                        <span class="screenshot-live-badge" id="cockpit-live-badge" style="display:none;">LIVE</span>
+                    </div>
+                </div>
+                <div class="screenshot-footer">
+                    <span class="screenshot-res" id="cockpit-resolution">--</span>
+                    <span class="screenshot-age" id="cockpit-age">--</span>
+                    <button class="screenshot-capture-btn" data-click="captureScreenshot" data-arg="cockpit" title="Manual capture">Capture</button>
+                </div>
+            </div>
+
+            <!-- Chase Cam (Following View) -->
+            <div class="screenshot-card" id="screenshot-chase">
+                <div class="screenshot-header">
+                    <span class="screenshot-title">Chase Cam</span>
+                    <span class="screenshot-status-badge" id="chase-badge">Offline</span>
+                </div>
+                <div class="screenshot-container" data-click="enlargeScreenshot" data-arg="chase">
+                    <img id="screenshot-img-chase" src="" alt="Chase Camera" class="screenshot-img" data-hide-error>
+                    <div class="screenshot-placeholder" id="placeholder-chase">
+                        <div class="placeholder-icon">--</div>
+                        <div class="placeholder-text">No Feed</div>
+                    </div>
+                    <div class="screenshot-overlay">
+                        <span class="screenshot-live-badge" id="chase-live-badge" style="display:none;">LIVE</span>
                     </div>
                 </div>
                 <div class="screenshot-footer">
                     <span class="screenshot-res" id="chase-resolution">--</span>
                     <span class="screenshot-age" id="chase-age">--</span>
-                    <button class="screenshot-capture-btn" onclick="captureScreenshot('chase')" title="Manual capture">📷</button>
+                    <button class="screenshot-capture-btn" data-click="captureScreenshot" data-arg="chase" title="Manual capture">Capture</button>
                 </div>
             </div>
 
-            <!-- POV Cam -->
-            <div class="screenshot-card" id="screenshot-pov">
+            <!-- Suspension Cam -->
+            <div class="screenshot-card" id="screenshot-suspension">
                 <div class="screenshot-header">
-                    <span class="screenshot-title">👁️ Driver POV</span>
-                    <span class="screenshot-status-badge" id="pov-badge">Offline</span>
+                    <span class="screenshot-title">Suspension</span>
+                    <span class="screenshot-status-badge" id="suspension-badge">Offline</span>
                 </div>
-                <div class="screenshot-container" onclick="enlargeScreenshot('pov')">
-                    <img id="screenshot-img-pov" src="" alt="POV Camera" class="screenshot-img" onerror="this.style.display='none'">
-                    <div class="screenshot-placeholder" id="placeholder-pov">
-                        <div class="placeholder-icon">📹</div>
+                <div class="screenshot-container" data-click="enlargeScreenshot" data-arg="suspension">
+                    <img id="screenshot-img-suspension" src="" alt="Suspension Camera" class="screenshot-img" data-hide-error>
+                    <div class="screenshot-placeholder" id="placeholder-suspension">
+                        <div class="placeholder-icon">--</div>
                         <div class="placeholder-text">No Feed</div>
                     </div>
                     <div class="screenshot-overlay">
-                        <span class="screenshot-live-badge" id="pov-live-badge" style="display:none;">🔴 LIVE</span>
+                        <span class="screenshot-live-badge" id="suspension-live-badge" style="display:none;">LIVE</span>
                     </div>
                 </div>
                 <div class="screenshot-footer">
-                    <span class="screenshot-res" id="pov-resolution">--</span>
-                    <span class="screenshot-age" id="pov-age">--</span>
-                    <button class="screenshot-capture-btn" onclick="captureScreenshot('pov')" title="Manual capture">📷</button>
-                </div>
-            </div>
-
-            <!-- Roof Cam -->
-            <div class="screenshot-card" id="screenshot-roof">
-                <div class="screenshot-header">
-                    <span class="screenshot-title">🔝 Roof Cam</span>
-                    <span class="screenshot-status-badge" id="roof-badge">Offline</span>
-                </div>
-                <div class="screenshot-container" onclick="enlargeScreenshot('roof')">
-                    <img id="screenshot-img-roof" src="" alt="Roof Camera" class="screenshot-img" onerror="this.style.display='none'">
-                    <div class="screenshot-placeholder" id="placeholder-roof">
-                        <div class="placeholder-icon">📹</div>
-                        <div class="placeholder-text">No Feed</div>
-                    </div>
-                    <div class="screenshot-overlay">
-                        <span class="screenshot-live-badge" id="roof-live-badge" style="display:none;">🔴 LIVE</span>
-                    </div>
-                </div>
-                <div class="screenshot-footer">
-                    <span class="screenshot-res" id="roof-resolution">--</span>
-                    <span class="screenshot-age" id="roof-age">--</span>
-                    <button class="screenshot-capture-btn" onclick="captureScreenshot('roof')" title="Manual capture">📷</button>
-                </div>
-            </div>
-
-            <!-- Front Cam -->
-            <div class="screenshot-card" id="screenshot-front">
-                <div class="screenshot-header">
-                    <span class="screenshot-title">🚘 Front Cam</span>
-                    <span class="screenshot-status-badge" id="front-badge">Offline</span>
-                </div>
-                <div class="screenshot-container" onclick="enlargeScreenshot('front')">
-                    <img id="screenshot-img-front" src="" alt="Front Camera" class="screenshot-img" onerror="this.style.display='none'">
-                    <div class="screenshot-placeholder" id="placeholder-front">
-                        <div class="placeholder-icon">📹</div>
-                        <div class="placeholder-text">No Feed</div>
-                    </div>
-                    <div class="screenshot-overlay">
-                        <span class="screenshot-live-badge" id="front-live-badge" style="display:none;">🔴 LIVE</span>
-                    </div>
-                </div>
-                <div class="screenshot-footer">
-                    <span class="screenshot-res" id="front-resolution">--</span>
-                    <span class="screenshot-age" id="front-age">--</span>
-                    <button class="screenshot-capture-btn" onclick="captureScreenshot('front')" title="Manual capture">📷</button>
+                    <span class="screenshot-res" id="suspension-resolution">--</span>
+                    <span class="screenshot-age" id="suspension-age">--</span>
+                    <button class="screenshot-capture-btn" data-click="captureScreenshot" data-arg="suspension" title="Manual capture">Capture</button>
                 </div>
             </div>
         </div>
@@ -2535,7 +2654,7 @@ DASHBOARD_HTML = '''
         <!-- Stream Info -->
         <div class="card">
             <div class="card-header">
-                <h2>📡 Stream Info</h2>
+                <h2>Stream Info</h2>
             </div>
             <div class="stream-info-grid">
                 <div class="stream-info-item">
@@ -2559,14 +2678,14 @@ DASHBOARD_HTML = '''
     </div>
 
     <!-- Screenshot Enlarged Modal -->
-    <div id="screenshotModal" class="screenshot-modal" onclick="closeScreenshotModal()">
-        <div class="screenshot-modal-content" onclick="event.stopPropagation()">
+    <div id="screenshotModal" class="screenshot-modal" data-click="closeScreenshotModal">
+        <div class="screenshot-modal-content" data-click-stop>
             <img id="screenshotModalImg" src="" alt="Enlarged Screenshot">
             <div class="screenshot-modal-info">
                 <span id="screenshotModalTitle">Camera</span>
                 <span id="screenshotModalTime">--</span>
             </div>
-            <button class="screenshot-modal-close" onclick="closeScreenshotModal()">✕</button>
+            <button class="screenshot-modal-close" data-click="closeScreenshotModal">X</button>
         </div>
     </div>
 
@@ -2574,13 +2693,13 @@ DASHBOARD_HTML = '''
     <div class="tab-content" id="tab-driver">
         <!-- ANT+ Device Status -->
         <div class="ant-status-card" id="antStatusCard">
-            <span class="ant-status-icon" id="antIcon">📡</span>
+            <span class="ant-status-icon" id="antIcon">--</span>
             <div class="ant-status-info">
                 <div class="device-name" id="antDeviceName">ANT+ Heart Rate Monitor</div>
                 <div class="device-id" id="antDeviceId">Searching...</div>
             </div>
             <div class="ant-battery" id="antBattery">
-                <span>🔋</span>
+                <span></span>
                 <span id="antBatteryPct">--%</span>
             </div>
         </div>
@@ -2633,7 +2752,7 @@ DASHBOARD_HTML = '''
         <!-- Heart Rate History Chart -->
         <div class="card">
             <div class="card-header">
-                <h2>❤️ Heart Rate History</h2>
+                <h2>Heart Rate History</h2>
                 <span style="font-size:0.75rem;color:var(--text-muted);">Last 2 minutes</span>
             </div>
             <div class="chart-container">
@@ -2644,7 +2763,7 @@ DASHBOARD_HTML = '''
         <!-- Time in Zone -->
         <div class="card">
             <div class="card-header">
-                <h2>⏱️ Time in Zone</h2>
+                <h2>Time in Zone</h2>
             </div>
             <div class="zone-time-grid">
                 <div class="zone-time-item">
@@ -2683,7 +2802,7 @@ DASHBOARD_HTML = '''
         <!-- Zone Reference Card -->
         <div class="card">
             <div class="card-header">
-                <h2>📊 Zone Reference</h2>
+                <h2>Zone Reference</h2>
                 <span style="font-size:0.7rem;color:var(--text-muted);">Based on 185 max HR</span>
             </div>
             <div style="font-size:0.8rem; color:var(--text-secondary); line-height:1.8;">
@@ -2719,18 +2838,23 @@ DASHBOARD_HTML = '''
         <div class="card">
             <div class="card-header">
                 <h2>Quick Pit Notes</h2>
+                <!-- PIT-COMMS-1: Sync status indicator -->
+                <div id="pitNotesSyncStatus" style="font-size:0.75rem; color:var(--text-muted); margin-top:4px;">
+                    <span id="pitNotesCloudStatus">Cloud: --</span>
+                    <span style="margin-left:12px;" id="pitNotesQueueCount">Queued: 0</span>
+                </div>
             </div>
             <div class="pit-notes">
                 <textarea class="pit-notes-input" id="pitNoteInput" rows="2" placeholder="Type a note to send to race control..."></textarea>
                 <div class="pit-notes-btns">
-                    <button class="quick-note-btn" onclick="sendQuickNote('PIT IN')">PIT IN</button>
-                    <button class="quick-note-btn" onclick="sendQuickNote('PIT OUT')">PIT OUT</button>
-                    <button class="quick-note-btn" onclick="sendQuickNote('CHANGING TIRES')">TIRES</button>
-                    <button class="quick-note-btn" onclick="sendQuickNote('REFUELING')">FUEL</button>
-                    <button class="quick-note-btn danger" onclick="sendQuickNote('MECHANICAL ISSUE')">MECHANICAL</button>
-                    <button class="quick-note-btn danger" onclick="sendQuickNote('DRIVER CONCERN')">DRIVER</button>
+                    <button class="quick-note-btn" data-click="sendQuickNote" data-arg="PIT IN">PIT IN</button>
+                    <button class="quick-note-btn" data-click="sendQuickNote" data-arg="PIT OUT">PIT OUT</button>
+                    <button class="quick-note-btn" data-click="sendQuickNote" data-arg="CHANGING TIRES">TIRES</button>
+                    <button class="quick-note-btn" data-click="sendQuickNote" data-arg="REFUELING">FUEL</button>
+                    <button class="quick-note-btn danger" data-click="sendQuickNote" data-arg="MECHANICAL ISSUE">MECHANICAL</button>
+                    <button class="quick-note-btn danger" data-click="sendQuickNote" data-arg="DRIVER CONCERN">DRIVER</button>
                 </div>
-                <button class="send-note-btn" onclick="sendPitNote()">📤 Send Note to Race Control</button>
+                <button class="send-note-btn" data-click="sendPitNote">Send Note to Race Control</button>
                 <div class="pit-notes-history">
                     <div class="pit-notes-history-header">Recent Notes:</div>
                     <div id="pitNotesHistory"><div class="pit-note-empty">Loading...</div></div>
@@ -2764,13 +2888,16 @@ DASHBOARD_HTML = '''
             <div class="sub-value" id="deltaToLeader">
                 <span id="deltaValue">--</span> behind leader
             </div>
+            <div class="sub-value" id="milesRemainingDisplay" style="margin-top:6px; font-size:1.1rem; color:var(--accent);">
+                <span id="milesRemainingValue">—</span>
+            </div>
         </div>
 
         <div class="grid-2">
             <!-- Lap Counter -->
             <div class="card">
                 <div class="card-header">
-                    <h2>🏁 Lap Progress</h2>
+                    <h2>Lap Progress</h2>
                 </div>
                 <div class="gauge" style="padding:20px; text-align:center;">
                     <div class="value" style="font-size:3rem;"><span id="lapNumber">0</span></div>
@@ -2784,8 +2911,8 @@ DASHBOARD_HTML = '''
             <!-- Fuel Strategy Card -->
             <div class="card">
                 <div class="card-header">
-                    <h2>⛽ Fuel Strategy</h2>
-                    <button class="quick-note-btn" onclick="toggleFuelConfig()" style="padding:4px 8px; font-size:0.8rem;">⚙️</button>
+                    <h2>Fuel Strategy</h2>
+                    <button class="quick-note-btn" data-click="toggleFuelConfig" style="padding:4px 8px; font-size:0.8rem;">Config</button>
                 </div>
                 <div id="fuelPanel">
                     <!-- Fuel Level Bar (only shown when fuel is set) -->
@@ -2795,13 +2922,13 @@ DASHBOARD_HTML = '''
 
                     <!-- Fuel Not Set Warning -->
                     <div id="fuelUnsetWarning" style="padding:15px; text-align:center; background:var(--warning-bg, rgba(255,193,7,0.1)); border-radius:8px; margin-bottom:10px;">
-                        <div style="font-size:1.5rem; margin-bottom:8px;">⚠️</div>
+                        <div style="font-size:1.5rem; margin-bottom:8px;">!</div>
                         <div style="color:var(--warning-color, #ffc107); font-weight:bold;">Fuel Not Set</div>
                         <div style="font-size:0.85rem; color:var(--text-muted); margin-top:4px;">Tap below to set current fuel level</div>
                     </div>
 
                     <div class="grid-2" style="margin-top:10px;">
-                        <div class="gauge" style="cursor:pointer;" onclick="promptFuelLevel()">
+                        <div class="gauge" style="cursor:pointer;" data-click="promptFuelLevel">
                             <div class="label">Remaining <span style="font-size:0.7rem; opacity:0.6;">(tap to edit)</span></div>
                             <div class="value">
                                 <span id="fuelRemaining" style="border-bottom:1px dashed var(--text-muted);">--</span>
@@ -2819,23 +2946,23 @@ DASHBOARD_HTML = '''
                         <div class="grid-2" style="gap:10px;">
                             <div>
                                 <label style="font-size:0.8rem; color:var(--text-muted);">Tank Capacity (gal)</label>
-                                <input type="number" id="tankCapacityInput" value="35" min="5" max="250" step="0.5"
+                                <input type="number" id="tankCapacityInput" value="" min="1" max="250" step="0.5" placeholder="95"
                                     style="width:100%; padding:8px; margin-top:4px; border-radius:4px; background:var(--card-bg); color:var(--text-color); border:1px solid var(--border-color);">
                             </div>
                             <div>
                                 <label style="font-size:0.8rem; color:var(--text-muted);">Est. MPG</label>
-                                <input type="number" id="fuelMpgInput" value="2.0" min="0.5" max="10.0" step="0.1"
+                                <input type="number" id="fuelMpgInput" value="2.0" min="0.1" max="30" step="0.1"
                                     style="width:100%; padding:8px; margin-top:4px; border-radius:4px; background:var(--card-bg); color:var(--text-color); border:1px solid var(--border-color);">
                             </div>
                         </div>
-                        <button class="quick-note-btn" onclick="saveFuelConfig()" style="width:100%; margin-top:10px;">
-                            💾 Save Configuration
+                        <button class="quick-note-btn" data-click="saveFuelConfig" style="width:100%; margin-top:10px;">
+                            Save Configuration
                         </button>
                     </div>
 
                     <div style="margin-top:10px; display:flex; gap:8px;">
-                        <button class="quick-note-btn" onclick="recordFuelFill()" style="flex:1;">
-                            ⛽ TANK FILLED
+                        <button class="quick-note-btn" data-click="recordFuelFill" style="flex:1;">
+                            TANK FILLED
                         </button>
                     </div>
 
@@ -2863,8 +2990,8 @@ DASHBOARD_HTML = '''
                         <div style="margin-top:6px; font-size:0.75rem; color:var(--text-muted);">
                             Trip since: <span id="tripStartTime">--</span>
                         </div>
-                        <button class="quick-note-btn" onclick="resetTripMiles()" style="width:100%; margin-top:8px; font-size:0.8rem;">
-                            🔄 Reset Trip Miles
+                        <button class="quick-note-btn" data-click="resetTripMiles" style="width:100%; margin-top:8px; font-size:0.8rem;">
+                            Reset Trip Miles
                         </button>
                     </div>
                 </div>
@@ -2874,8 +3001,8 @@ DASHBOARD_HTML = '''
         <!-- Tire Tracking Card (PIT-5R: Front/Rear Independent) -->
         <div class="card">
             <div class="card-header">
-                <h2>🔄 Tire Tracking</h2>
-                <select id="tireBrandSelect" onchange="updateTireBrand(this.value)" style="padding:6px 10px; border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); border:none; font-size:0.85rem;">
+                <h2>Tire Tracking</h2>
+                <select id="tireBrandSelect" data-change-val="updateTireBrand" style="padding:6px 10px; border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); border:none; font-size:0.85rem;">
                     <option value="Toyo">Toyo</option>
                     <option value="BFG">BFG</option>
                     <option value="Maxxis">Maxxis</option>
@@ -2891,7 +3018,7 @@ DASHBOARD_HTML = '''
                         <span class="tire-miles-display"><span id="tireFrontMiles">0.0</span> mi</span>
                         <span class="tire-changed-display">Changed: <span id="tireFrontChanged">--</span></span>
                     </div>
-                    <button class="quick-note-btn tire-reset-btn" id="tireFrontResetBtn" onclick="resetTireAxle('front')">Reset Front</button>
+                    <button class="quick-note-btn tire-reset-btn" id="tireFrontResetBtn" data-click="resetTireAxle" data-arg="front">Reset Front</button>
                 </div>
                 <!-- Rear Axle -->
                 <div class="tire-axle-row" id="tireRearRow">
@@ -2901,7 +3028,7 @@ DASHBOARD_HTML = '''
                         <span class="tire-miles-display"><span id="tireRearMiles">0.0</span> mi</span>
                         <span class="tire-changed-display">Changed: <span id="tireRearChanged">--</span></span>
                     </div>
-                    <button class="quick-note-btn tire-reset-btn" id="tireRearResetBtn" onclick="resetTireAxle('rear')">Reset Rear</button>
+                    <button class="quick-note-btn tire-reset-btn" id="tireRearResetBtn" data-click="resetTireAxle" data-arg="rear">Reset Rear</button>
                 </div>
             </div>
         </div>
@@ -2909,7 +3036,7 @@ DASHBOARD_HTML = '''
         <!-- Pit Stop Readiness -->
         <div class="card">
             <div class="card-header">
-                <h2>🛠️ Pit Readiness Checklist</h2>
+                <h2>Pit Readiness Checklist</h2>
             </div>
             <div class="pit-checklist">
                 <label class="checklist-item">
@@ -2930,7 +3057,7 @@ DASHBOARD_HTML = '''
         <!-- P2: Weather Panel -->
         <div class="card">
             <div class="card-header">
-                <h2>🌤️ Weather Conditions</h2>
+                <h2>Weather Conditions</h2>
             </div>
             <div class="grid-3">
                 <div class="gauge">
@@ -2954,14 +3081,14 @@ DASHBOARD_HTML = '''
         <!-- P2: Pit Stop Timer -->
         <div class="card">
             <div class="card-header">
-                <h2>⏱️ Pit Stop Timer</h2>
+                <h2>Pit Stop Timer</h2>
             </div>
             <div class="pit-timer-panel">
                 <div class="pit-timer-display" id="pitTimerDisplay">00:00.0</div>
                 <div class="pit-timer-btns">
-                    <button class="timer-btn start" onclick="startPitTimer()" id="pitTimerStart">▶ START</button>
-                    <button class="timer-btn stop" onclick="stopPitTimer()" id="pitTimerStop" disabled>⏹ STOP</button>
-                    <button class="timer-btn reset" onclick="resetPitTimer()">↺ RESET</button>
+                    <button class="timer-btn start" data-click="startPitTimer" id="pitTimerStart">START</button>
+                    <button class="timer-btn stop" data-click="stopPitTimer" id="pitTimerStop" disabled>STOP</button>
+                    <button class="timer-btn reset" data-click="resetPitTimer">RESET</button>
                 </div>
                 <div class="pit-timer-history">
                     <div class="timer-history-title">Recent Pit Stops:</div>
@@ -2973,7 +3100,7 @@ DASHBOARD_HTML = '''
         <!-- P2: Nearby Competitors -->
         <div class="card">
             <div class="card-header">
-                <h2>🏎️ Nearby Competitors</h2>
+                <h2>Nearby Competitors</h2>
             </div>
             <div id="competitorsPanel" class="competitors-list">
                 <div class="competitor-item loading">Loading competitor data...</div>
@@ -2985,25 +3112,25 @@ DASHBOARD_HTML = '''
     <div class="tab-content" id="tab-course">
         <!-- Course Info (shown when GPX loaded) -->
         <div class="course-loaded-info" id="courseLoadedInfo" style="display:none;">
-            <span class="course-loaded-icon">🗺️</span>
+            <span class="course-loaded-icon"></span>
             <div class="course-loaded-details">
                 <div class="course-loaded-name" id="courseFileName">course.gpx</div>
                 <div class="course-loaded-meta" id="courseMeta">-- mi • -- waypoints</div>
             </div>
-            <button class="course-clear-btn" onclick="clearCourse()">✕ Clear</button>
+            <button class="course-clear-btn" data-click="clearCourse">X Clear</button>
         </div>
 
         <!-- Course Progress Bar -->
         <div class="card" id="courseProgressCard" style="display:none;">
             <div class="card-header">
-                <h2>📍 Course Progress</h2>
+                <h2>Course Progress</h2>
                 <div style="display:flex; align-items:center; gap:8px;">
-                    <select id="raceTypeSelect" onchange="setRaceType(this.value)" style="padding:4px 8px; border-radius:4px; background:var(--card-bg); color:var(--text-color); border:1px solid var(--border-color);">
+                    <select id="raceTypeSelect" data-change-val="setRaceType" style="padding:4px 8px; border-radius:4px; background:var(--card-bg); color:var(--text-color); border:1px solid var(--border-color);">
                         <option value="point_to_point">Point-to-Point</option>
                         <option value="lap_based">Lap Race</option>
                     </select>
                     <div id="lapCountDiv" style="display:none; align-items:center; gap:4px;">
-                        <input type="number" id="lapCountInput" value="1" min="1" max="99" onchange="setTotalLaps(this.value)" style="width:40px; padding:4px; border-radius:4px; background:var(--card-bg); color:var(--text-color); border:1px solid var(--border-color); text-align:center;">
+                        <input type="number" id="lapCountInput" value="1" min="1" max="99" data-change-val="setTotalLaps" style="width:40px; padding:4px; border-radius:4px; background:var(--card-bg); color:var(--text-color); border:1px solid var(--border-color); text-align:center;">
                         <span style="font-size:0.8rem;">laps</span>
                     </div>
                     <span id="courseProgressPct">0%</span>
@@ -3035,15 +3162,15 @@ DASHBOARD_HTML = '''
         <!-- Course Map -->
         <div class="card">
             <div class="card-header">
-                <h2>🗺️ Course Map</h2>
-                <button class="quick-note-btn" onclick="centerOnVehicle()" id="centerVehicleBtn">
-                    📍 Center
+                <h2>Course Map</h2>
+                <button class="quick-note-btn" data-click="centerOnVehicle" id="centerVehicleBtn">
+                    Center
                 </button>
             </div>
             <div class="course-map-container" id="courseMapContainer">
                 <div id="courseMap"></div>
                 <div class="map-placeholder" id="mapPlaceholder">
-                    <div class="map-placeholder-icon">🗺️</div>
+                    <div class="map-placeholder-icon">--</div>
                     <div>No course loaded</div>
                     <div style="font-size:0.8rem;color:var(--text-muted);margin-top:8px;">
                         Upload a GPX file to see the course
@@ -3053,37 +3180,37 @@ DASHBOARD_HTML = '''
         </div>
 
         <!-- GPX Upload Zone -->
-        <div class="gpx-upload-zone" id="gpxUploadZone" onclick="document.getElementById('gpxFileInput').click()">
-            <div class="gpx-upload-icon">📤</div>
+        <div class="gpx-upload-zone" id="gpxUploadZone" data-click="triggerGpxUpload">
+            <div class="gpx-upload-icon">Upload</div>
             <div class="gpx-upload-text">Drop GPX file here or click to upload</div>
             <div class="gpx-upload-hint">Supports .gpx files from Strava, Garmin, etc.</div>
-            <input type="file" id="gpxFileInput" accept=".gpx" onchange="handleGPXUpload(event)">
+            <input type="file" id="gpxFileInput" accept=".gpx" data-change-event="handleGPXUpload">
         </div>
 
         <!-- Current Position Display -->
         <div class="card">
             <div class="card-header">
-                <h2>📌 Current Position</h2>
-                <button class="quick-note-btn" onclick="toggleGpsTestMode()" id="gpsTestModeBtn" style="padding:4px 8px; font-size:0.75rem;">
-                    🧪 Test
+                <h2>Current Position</h2>
+                <button class="quick-note-btn" data-click="toggleGpsTestMode" id="gpsTestModeBtn" style="padding:4px 8px; font-size:0.75rem;">
+                    Test
                 </button>
             </div>
             <!-- GPS Stale Warning -->
             <div id="gpsStaleWarning" class="gps-stale-warning" style="display:none;">
-                ⚠️ GPS STALE
+                GPS STALE
             </div>
             <!-- GPS Test Mode Indicator -->
             <div id="gpsTestModeIndicator" class="gps-test-mode-indicator" style="display:none;">
-                🧪 TEST MODE - Simulated GPS
+                TEST MODE - Simulated GPS
             </div>
             <div class="gps-display">
                 <div class="gps-coords">
                     <span id="courseGpsLat">0.000000</span>, <span id="courseGpsLon">0.000000</span>
                 </div>
                 <div class="gps-meta">
-                    <span>🛰️ <span id="courseGpsSats">0</span> sats</span>
-                    <span>🧭 <span id="courseHeading">--</span>°</span>
-                    <span>📶 <span id="courseGpsAccuracy">--</span>m accuracy</span>
+                    <span><span id="courseGpsSats">0</span> sats</span>
+                    <span><span id="courseHeading">--</span>°</span>
+                    <span><span id="courseGpsAccuracy">--</span>m accuracy</span>
                 </div>
             </div>
         </div>
@@ -3094,18 +3221,18 @@ DASHBOARD_HTML = '''
         <!-- Fan Visibility Toggle -->
         <div class="card">
             <div class="card-header">
-                <h2>👁️ Fan Visibility</h2>
-                <span class="badge" id="visibilityBadge" style="background: var(--accent-green); color: #000;">Visible</span>
+                <h2>Fan Visibility</h2>
+                <span class="badge" id="visibilityBadge" style="background: var(--success); color: #000;">Visible</span>
             </div>
             <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 12px;">
                 Control whether fans can see your vehicle on the live dashboard. When hidden, your position, telemetry, and video are not shown to public viewers.
             </p>
             <div style="display: flex; gap: 8px;">
-                <button class="btn" id="btnVisibilityOn" onclick="setFanVisibility(true)" style="flex: 1; background: var(--accent-green); color: #000;">
-                    ✅ Visible to Fans
+                <button class="btn vis-btn vis-on" id="btnVisibilityOn" data-click="setFanVisibility" data-arg="true" style="flex: 1;">
+                    Visible to Fans
                 </button>
-                <button class="btn btn-secondary" id="btnVisibilityOff" onclick="setFanVisibility(false)" style="flex: 1;">
-                    🚫 Hidden from Fans
+                <button class="btn vis-btn" id="btnVisibilityOff" data-click="setFanVisibility" data-arg="false" style="flex: 1;">
+                    Hidden from Fans
                 </button>
             </div>
             <div id="visibilitySyncStatus" style="margin-top: 8px; font-size: 0.8rem; color: var(--text-muted);"></div>
@@ -3114,7 +3241,7 @@ DASHBOARD_HTML = '''
         <!-- Telemetry Sharing Policy -->
         <div class="card">
             <div class="card-header">
-                <h2>📊 Telemetry Sharing</h2>
+                <h2>Telemetry Sharing</h2>
             </div>
             <p style="color: var(--text-muted); font-size: 0.85rem; margin-bottom: 12px;">
                 Choose which telemetry fields production and fans can see. Fans only see a subset of what production sees.
@@ -3122,34 +3249,34 @@ DASHBOARD_HTML = '''
 
             <!-- Presets -->
             <div style="display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap;">
-                <button class="btn btn-secondary" onclick="applyPreset('none')" style="font-size: 0.8rem; padding: 6px 12px;">🔒 None</button>
-                <button class="btn btn-secondary" onclick="applyPreset('gps')" style="font-size: 0.8rem; padding: 6px 12px;">📍 GPS Only</button>
-                <button class="btn btn-secondary" onclick="applyPreset('basic')" style="font-size: 0.8rem; padding: 6px 12px;">⚡ Basic</button>
-                <button class="btn btn-secondary" onclick="applyPreset('full')" style="font-size: 0.8rem; padding: 6px 12px;">🔓 Full</button>
+                <button class="btn btn-secondary" data-click="applyPreset" data-arg="none" style="font-size: 0.8rem; padding: 6px 12px;">None</button>
+                <button class="btn btn-secondary" data-click="applyPreset" data-arg="gps" style="font-size: 0.8rem; padding: 6px 12px;">GPS Only</button>
+                <button class="btn btn-secondary" data-click="applyPreset" data-arg="basic" style="font-size: 0.8rem; padding: 6px 12px;">Basic</button>
+                <button class="btn btn-secondary" data-click="applyPreset" data-arg="full" style="font-size: 0.8rem; padding: 6px 12px;">Full</button>
             </div>
 
             <!-- Field groups -->
             <div id="sharingFieldGroups">
                 <div class="card" style="background: var(--bg-secondary); padding: 10px; margin-bottom: 8px;">
-                    <h3 style="font-size: 0.85rem; margin: 0 0 8px 0; color: var(--text-secondary);">📍 GPS</h3>
+                    <h3 style="font-size: 0.85rem; margin: 0 0 8px 0; color: var(--text-secondary);">GPS</h3>
                     <div id="sharing-gps" style="display: flex; flex-wrap: wrap; gap: 6px;"></div>
                 </div>
                 <div class="card" style="background: var(--bg-secondary); padding: 10px; margin-bottom: 8px;">
-                    <h3 style="font-size: 0.85rem; margin: 0 0 8px 0; color: var(--text-secondary);">🔧 Engine Basic</h3>
+                    <h3 style="font-size: 0.85rem; margin: 0 0 8px 0; color: var(--text-secondary);">Engine Basic</h3>
                     <div id="sharing-engine_basic" style="display: flex; flex-wrap: wrap; gap: 6px;"></div>
                 </div>
                 <div class="card" style="background: var(--bg-secondary); padding: 10px; margin-bottom: 8px;">
-                    <h3 style="font-size: 0.85rem; margin: 0 0 8px 0; color: var(--text-secondary);">⚙️ Engine Advanced</h3>
+                    <h3 style="font-size: 0.85rem; margin: 0 0 8px 0; color: var(--text-secondary);">Engine Advanced</h3>
                     <div id="sharing-engine_advanced" style="display: flex; flex-wrap: wrap; gap: 6px;"></div>
                 </div>
                 <div class="card" style="background: var(--bg-secondary); padding: 10px; margin-bottom: 8px;">
-                    <h3 style="font-size: 0.85rem; margin: 0 0 8px 0; color: var(--text-secondary);">❤️ Biometrics</h3>
+                    <h3 style="font-size: 0.85rem; margin: 0 0 8px 0; color: var(--text-secondary);">Biometrics</h3>
                     <div id="sharing-biometrics" style="display: flex; flex-wrap: wrap; gap: 6px;"></div>
                 </div>
             </div>
 
-            <button class="btn" onclick="saveSharingPolicy()" style="width: 100%; margin-top: 8px;">
-                💾 Save & Sync to Cloud
+            <button class="btn" data-click="saveSharingPolicy" style="width: 100%; margin-top: 8px;">
+                Save & Sync to Cloud
             </button>
             <div id="sharingSyncStatus" style="margin-top: 8px; font-size: 0.8rem; color: var(--text-muted);"></div>
         </div>
@@ -3159,9 +3286,9 @@ DASHBOARD_HTML = '''
     <div class="tab-content" id="tab-devices">
         <div class="card">
             <div class="card-header">
-                <h2>🔍 Device Scanner</h2>
-                <button class="quick-note-btn" onclick="scanDevices()" id="scanDevicesBtn">
-                    🔄 Scan Devices
+                <h2>Device Scanner</h2>
+                <button class="quick-note-btn" data-click="scanDevices" id="scanDevicesBtn">
+                    Scan Devices
                 </button>
             </div>
             <div id="deviceScanStatus" style="color:var(--text-secondary); font-size:0.85rem; margin-bottom:12px;">
@@ -3172,7 +3299,7 @@ DASHBOARD_HTML = '''
         <!-- USB Cameras -->
         <div class="card">
             <div class="card-header">
-                <h2>📹 USB Cameras</h2>
+                <h2>USB Cameras</h2>
             </div>
             <div id="cameraDevicesPanel">
                 <div class="device-list" id="cameraDevicesList">
@@ -3181,34 +3308,35 @@ DASHBOARD_HTML = '''
             </div>
             <div class="device-mapping-section" style="margin-top:16px; padding-top:16px; border-top:1px solid var(--bg-tertiary);">
                 <h3 style="font-size:0.85rem; color:var(--text-secondary); margin-bottom:12px;">Camera Assignments</h3>
+                <!-- CAM-CONTRACT-1B: Canonical 4-camera slot mapping -->
                 <div class="camera-mapping-grid">
                     <div class="mapping-item">
-                        <label>Chase Cam</label>
-                        <select id="mappingChase" onchange="updateCameraMapping('chase', this.value)">
+                        <label>Main</label>
+                        <select id="mappingMain" data-change-val="updateCameraMapping" data-arg="main">
                             <option value="">-- Not assigned --</option>
                         </select>
                     </div>
                     <div class="mapping-item">
-                        <label>Driver POV</label>
-                        <select id="mappingPov" onchange="updateCameraMapping('pov', this.value)">
+                        <label>Cockpit</label>
+                        <select id="mappingCockpit" data-change-val="updateCameraMapping" data-arg="cockpit">
                             <option value="">-- Not assigned --</option>
                         </select>
                     </div>
                     <div class="mapping-item">
-                        <label>Roof Cam</label>
-                        <select id="mappingRoof" onchange="updateCameraMapping('roof', this.value)">
+                        <label>Chase</label>
+                        <select id="mappingChase" data-change-val="updateCameraMapping" data-arg="chase">
                             <option value="">-- Not assigned --</option>
                         </select>
                     </div>
                     <div class="mapping-item">
-                        <label>Front Cam</label>
-                        <select id="mappingFront" onchange="updateCameraMapping('front', this.value)">
+                        <label>Suspension</label>
+                        <select id="mappingSuspension" data-change-val="updateCameraMapping" data-arg="suspension">
                             <option value="">-- Not assigned --</option>
                         </select>
                     </div>
                 </div>
-                <button class="send-note-btn" style="margin-top:12px;" onclick="saveCameraMappings()">
-                    💾 Save Camera Assignments
+                <button class="send-note-btn" style="margin-top:12px;" data-click="saveCameraMappings">
+                    Save Camera Assignments
                 </button>
             </div>
         </div>
@@ -3216,7 +3344,7 @@ DASHBOARD_HTML = '''
         <!-- GPS Device -->
         <div class="card">
             <div class="card-header">
-                <h2>🛰️ GPS Device</h2>
+                <h2>GPS Device</h2>
                 <span class="device-status-badge" id="gpsDeviceStatus">Unknown</span>
             </div>
             <div id="gpsDevicePanel">
@@ -3240,7 +3368,7 @@ DASHBOARD_HTML = '''
                 </div>
                 <div class="device-config-row" style="margin-top:12px;">
                     <label style="font-size:0.8rem; color:var(--text-secondary);">GPS Serial Port:</label>
-                    <select id="gpsPortSelect" style="flex:1;" onchange="updateGpsConfig()">
+                    <select id="gpsPortSelect" style="flex:1;" data-change-call="updateGpsConfig">
                         <option value="">-- Auto-detect --</option>
                     </select>
                 </div>
@@ -3250,7 +3378,7 @@ DASHBOARD_HTML = '''
         <!-- ANT+ Device -->
         <div class="card">
             <div class="card-header">
-                <h2>❤️ ANT+ USB Stick</h2>
+                <h2>ANT+ USB Stick</h2>
                 <span class="device-status-badge" id="antDeviceStatus">Unknown</span>
             </div>
             <div id="antDevicePanel">
@@ -3273,8 +3401,8 @@ DASHBOARD_HTML = '''
                     </div>
                 </div>
                 <div style="margin-top:12px; display:flex; gap:8px;">
-                    <button class="quick-note-btn" onclick="pairAntDevice()">📡 Pair Device</button>
-                    <button class="quick-note-btn" onclick="restartAntService()">🔄 Restart Service</button>
+                    <button class="quick-note-btn" data-click="pairAntDevice">Pair Device</button>
+                    <button class="quick-note-btn" data-click="restartAntService">Restart Service</button>
                 </div>
             </div>
         </div>
@@ -3282,7 +3410,7 @@ DASHBOARD_HTML = '''
         <!-- CAN Bus Interface -->
         <div class="card">
             <div class="card-header">
-                <h2>🚗 CAN Bus Interface</h2>
+                <h2>CAN Bus Interface</h2>
                 <span class="device-status-badge" id="canDeviceStatus">Unknown</span>
             </div>
             <div id="canDevicePanel">
@@ -3310,8 +3438,8 @@ DASHBOARD_HTML = '''
         <!-- All USB Devices (Debug) -->
         <div class="card">
             <div class="card-header">
-                <h2>🔌 All USB Devices</h2>
-                <button class="quick-note-btn" onclick="toggleUsbList()">Toggle List</button>
+                <h2>All USB Devices</h2>
+                <button class="quick-note-btn" data-click="toggleUsbList">Toggle List</button>
             </div>
             <div id="allUsbDevicesPanel" style="display:none;">
                 <div class="device-list" id="allUsbDevicesList">
@@ -3320,46 +3448,47 @@ DASHBOARD_HTML = '''
             </div>
         </div>
 
-        <!-- Service Status -->
+        <!-- Service Status — PIT-SVC-2: Unified status model -->
         <div class="card">
             <div class="card-header">
-                <h2>⚙️ Service Status</h2>
+                <h2>Service Status</h2>
             </div>
             <div class="service-status-grid" id="serviceStatusGrid">
                 <div class="service-item">
-                    <span class="service-name">argus-gps</span>
+                    <div><span class="service-name">argus-gps</span><div class="service-detail" id="svcGpsDetail"></div></div>
                     <span class="service-status" id="svcGps">--</span>
                 </div>
                 <div class="service-item">
-                    <span class="service-name">argus-can</span>
+                    <div><span class="service-name">argus-can</span><div class="service-detail" id="svcCanDetail"></div></div>
                     <span class="service-status" id="svcCan">--</span>
                 </div>
                 <div class="service-item">
-                    <span class="service-name">argus-ant</span>
+                    <div><span class="service-name">argus-ant</span><div class="service-detail" id="svcAntDetail"></div></div>
                     <span class="service-status" id="svcAnt">--</span>
                 </div>
                 <div class="service-item">
-                    <span class="service-name">argus-uplink</span>
+                    <div><span class="service-name">argus-uplink</span><div class="service-detail" id="svcUplinkDetail"></div></div>
                     <span class="service-status" id="svcUplink">--</span>
                 </div>
                 <div class="service-item">
-                    <span class="service-name">argus-video</span>
+                    <div><span class="service-name">argus-video</span><div class="service-detail" id="svcVideoDetail"></div></div>
                     <span class="service-status" id="svcVideo">--</span>
                 </div>
             </div>
-            <button class="send-note-btn" style="margin-top:12px;" onclick="restartAllServices()">
-                🔄 Restart All Services
+            <button class="send-note-btn" style="margin-top:12px;" data-click="restartAllServices">
+                Restart All Services
             </button>
         </div>
     </div>
 
-    <script>
+    <script nonce="__CSP_NONCE__">
         // ============ State ============
         let currentTab = 'engine';
         let alertActive = false;
         let alertTimeout = null;
-        let cameraStatus = { chase: 'offline', pov: 'offline', roof: 'offline', front: 'offline' };
-        let currentCamera = 'chase';
+        // CAM-CONTRACT-1B: Canonical 4-camera slots
+        let cameraStatus = { main: 'offline', cockpit: 'offline', chase: 'offline', suspension: 'offline' };
+        let currentCamera = 'main';
         let heartRateHistory = [];
         let driveStartTime = Date.now();
 
@@ -3414,7 +3543,7 @@ DASHBOARD_HTML = '''
                 hrLarge.textContent = '--';
                 hrZoneName.textContent = 'NO SIGNAL';
                 hrMarker.style.left = '0%';
-                document.getElementById('antIcon').textContent = '📡';
+                document.getElementById('antIcon').textContent = '--';
                 document.getElementById('antDeviceId').textContent = 'Searching...';
                 antConnected = false;
                 return;
@@ -3422,7 +3551,7 @@ DASHBOARD_HTML = '''
 
             antConnected = true;
             hrLarge.textContent = hr;
-            document.getElementById('antIcon').textContent = '💓';
+            document.getElementById('antIcon').textContent = 'HR';
             document.getElementById('antDeviceId').textContent = 'Connected';
 
             const zone = getHRZone(hr);
@@ -3670,7 +3799,7 @@ DASHBOARD_HTML = '''
                     width:34px; height:34px; font-size:14px; background:white;
                     color:#333; text-decoration:none; font-weight:bold;
                     cursor:pointer; user-select:none;
-                ">🏔️</a>`;
+                ">Topo</a>`;
                 L.DomEvent.disableClickPropagation(div);
                 div.querySelector('#basemapToggleBtn').addEventListener('click', function(e) {
                     e.preventDefault();
@@ -3678,7 +3807,7 @@ DASHBOARD_HTML = '''
                     const style = basemapStyles[currentBasemapKey];
                     courseMap.removeLayer(basemapLayer);
                     basemapLayer = L.tileLayer(style.url, { maxZoom: style.maxZoom }).addTo(courseMap);
-                    this.textContent = currentBasemapKey === 'topo' ? '🏔️' : '🛣️';
+                    this.textContent = currentBasemapKey === 'topo' ? 'Topo' : 'Street';
                     this.title = 'Current: ' + style.label + ' (click to switch)';
                 });
                 return div;
@@ -3722,7 +3851,7 @@ DASHBOARD_HTML = '''
                 if (staleWarning) {
                     const staleSecs = Math.round((now - lastGpsTs) / 1000);
                     staleWarning.style.display = 'block';
-                    staleWarning.innerHTML = `⚠️ GPS STALE (${staleSecs}s ago)`;
+                    staleWarning.innerHTML = `GPS STALE (${staleSecs}s ago)`;
                 }
             } else {
                 if (staleWarning) {
@@ -3749,7 +3878,7 @@ DASHBOARD_HTML = '''
                     return;
                 }
 
-                btn.textContent = '⏹️ Stop';
+                btn.textContent = 'Stop';
                 btn.style.background = 'var(--danger)';
                 indicator.style.display = 'block';
 
@@ -3758,7 +3887,7 @@ DASHBOARD_HTML = '''
                 gpsTestInterval = setInterval(runGpsTestTick, 1000);  // 1 Hz updates
                 console.log('GPS Test Mode: STARTED - Simulating vehicle along course');
             } else {
-                btn.textContent = '🧪 Test';
+                btn.textContent = 'Test';
                 btn.style.background = '';
                 indicator.style.display = 'none';
 
@@ -3949,7 +4078,7 @@ DASHBOARD_HTML = '''
                         const meta = document.getElementById('courseMeta');
                         if (meta) {
                             const origText = meta.textContent;
-                            meta.textContent = '✓ Saved to server';
+                            meta.textContent = 'Saved to server';
                             setTimeout(() => { meta.textContent = origText; }, 2000);
                         }
                     } else {
@@ -4189,40 +4318,87 @@ DASHBOARD_HTML = '''
         }
 
         // ============ Dashboard Update ============
+        // PIT-CAN-1: Check for null to show "--" until real CAN data arrives
         function updateDashboard(data) {
-            const rpm = data.rpm || 0;
+            // EDGE-CLOUD-2: Update banner FIRST, before any DOM access that might crash.
+            // This ensures the banner always reflects backend reality, even if
+            // other UI elements fail to render (missing DOM nodes, etc).
+            try {
+                var banner = document.getElementById('offlineBanner');
+                if (banner) {
+                    var detail = data.cloud_detail || 'not_configured';
+                    banner.classList.remove('info', 'error');
+                    if (detail === 'healthy') {
+                        banner.classList.remove('active');
+                    } else {
+                        banner.classList.add('active');
+                        if (detail === 'not_configured') {
+                            banner.classList.add('info');
+                            banner.textContent = 'Cloud not configured \u2014 Go to Settings to connect';
+                        } else if (detail === 'event_not_live') {
+                            banner.classList.add('info');
+                            banner.textContent = 'Cloud connected \u2014 Waiting for event to go live';
+                        } else if (detail === 'auth_rejected') {
+                            banner.classList.add('error');
+                            banner.textContent = 'Cloud auth rejected \u2014 Check truck token in Settings';
+                        } else {
+                            banner.textContent = 'Cloud connection lost \u2014 Data buffered locally';
+                        }
+                    }
+                }
+            } catch (bannerErr) {
+                console.warn('Banner update failed:', bannerErr);
+            }
+
+            // Wrap remaining UI updates in try-catch so DOM errors
+            // never propagate and break the EventSource handler.
+            try {
             const maxRpm = 7500;
 
             // Engine tab - NASCAR-style Tachometer
-            document.getElementById('rpmValue').textContent = Math.round(rpm).toLocaleString();
-
-            // Update tachometer needle (rotates from -135deg to +135deg for 0 to maxRPM)
-            const rpmPct = Math.min(rpm / maxRpm, 1);
-            const needleAngle = -135 + (rpmPct * 270);
-            document.getElementById('tachNeedle').style.transform = 'rotate(' + needleAngle + 'deg)';
-
-            // Update tachometer arc color based on RPM zone
-            const tachArc = document.getElementById('tachArc');
-            tachArc.classList.remove('warning', 'danger');
-            if (rpm > 7000) {
-                tachArc.classList.add('danger');
-            } else if (rpm > 6000) {
-                tachArc.classList.add('warning');
+            // PIT-CAN-1: Handle null RPM
+            if (data.rpm !== null && data.rpm !== undefined) {
+                const rpm = data.rpm;
+                document.getElementById('rpmValue').textContent = Math.round(rpm).toLocaleString();
+                const rpmPct = Math.min(rpm / maxRpm, 1);
+                const needleAngle = -135 + (rpmPct * 270);
+                document.getElementById('tachNeedle').style.transform = 'rotate(' + needleAngle + 'deg)';
+                // Update tachometer arc color based on RPM zone
+                const tachArc = document.getElementById('tachArc');
+                tachArc.classList.remove('warning', 'danger');
+                if (rpm > 7000) {
+                    tachArc.classList.add('danger');
+                } else if (rpm > 6000) {
+                    tachArc.classList.add('warning');
+                }
+            } else {
+                document.getElementById('rpmValue').textContent = '--';
+                document.getElementById('tachNeedle').style.transform = 'rotate(-135deg)';
+                document.getElementById('tachArc').classList.remove('warning', 'danger');
             }
 
-            // Gear display
-            const gear = data.gear || 0;
-            document.getElementById('gearValue').textContent = gear === 0 ? 'N' : (gear === -1 ? 'R' : gear);
+            // Gear display - PIT-CAN-1: Handle null gear
+            if (data.gear !== null && data.gear !== undefined) {
+                const gear = data.gear;
+                document.getElementById('gearValue').textContent = gear === 0 ? 'N' : (gear === -1 ? 'R' : gear);
+            } else {
+                document.getElementById('gearValue').textContent = '--';
+            }
 
-            // Speed in engine tab
-            document.getElementById('speedValueEngine').textContent = Math.round(data.speed_mph || 0);
+            // Speed in engine tab - PIT-CAN-1: Handle null speed
+            if (data.speed_mph !== null && data.speed_mph !== undefined) {
+                document.getElementById('speedValueEngine').textContent = Math.round(data.speed_mph);
+            } else {
+                document.getElementById('speedValueEngine').textContent = '--';
+            }
 
-            // PIT-3: Coolant tile in 2x2 grid (with color coding)
-            const coolantC = data.coolant_temp || 0;
-            const coolantTileF = coolantC * 1.8 + 32;
+            // PIT-CAN-1: Coolant tile in 2x2 grid (with color coding)
+            // Check for null/undefined to show placeholder until real CAN data arrives
+            const coolantC = data.coolant_temp;
             const coolantTileEl = document.getElementById('coolantTileValue');
             const coolantTileFill = document.getElementById('coolantTileFill');
-            if (coolantC > 0) {
+            if (coolantC !== null && coolantC !== undefined) {
+                const coolantTileF = coolantC * 1.8 + 32;
                 coolantTileEl.textContent = Math.round(coolantTileF);
                 coolantTileFill.style.width = Math.min(coolantTileF / 260 * 100, 100) + '%';
                 // Color code: normal < 220F, warning 220-250F, danger > 250F
@@ -4232,6 +4408,7 @@ DASHBOARD_HTML = '''
             } else {
                 coolantTileEl.textContent = '--';
                 coolantTileFill.style.width = '0%';
+                document.getElementById('coolantTile').style.borderLeft = '3px solid transparent';
             }
 
             // CAN data age indicator
@@ -4243,23 +4420,49 @@ DASHBOARD_HTML = '''
             if (canAge > 5000) freshnessEl.classList.add('offline');
             else if (canAge > 2000) freshnessEl.classList.add('stale');
 
-            // Engine vitals grid - with gauge bar fills
-            const coolantF = (data.coolant_temp || 0) * 1.8 + 32;
-            document.getElementById('coolantValue').textContent = Math.round(coolantF);
-            document.getElementById('coolantFill').style.width = Math.min(coolantF / 260 * 100, 100) + '%';
+            // PIT-CAN-1: Engine vitals grid - with gauge bar fills
+            // Check for null to show "--" placeholder until real CAN data arrives
+            if (data.coolant_temp !== null && data.coolant_temp !== undefined) {
+                const coolantF = data.coolant_temp * 1.8 + 32;
+                document.getElementById('coolantValue').textContent = Math.round(coolantF);
+                document.getElementById('coolantFill').style.width = Math.min(coolantF / 260 * 100, 100) + '%';
+            } else {
+                document.getElementById('coolantValue').textContent = '--';
+                document.getElementById('coolantFill').style.width = '0%';
+            }
 
-            document.getElementById('oilValue').textContent = Math.round(data.oil_pressure || 0);
-            document.getElementById('oilFill').style.width = Math.min((data.oil_pressure || 0) / 80 * 100, 100) + '%';
+            if (data.oil_pressure !== null && data.oil_pressure !== undefined) {
+                document.getElementById('oilValue').textContent = Math.round(data.oil_pressure);
+                document.getElementById('oilFill').style.width = Math.min(data.oil_pressure / 80 * 100, 100) + '%';
+            } else {
+                document.getElementById('oilValue').textContent = '--';
+                document.getElementById('oilFill').style.width = '0%';
+            }
 
-            const oilTempF = (data.oil_temp || 0) * 1.8 + 32;
-            document.getElementById('oilTempValue').textContent = Math.round(oilTempF) || '--';
-            document.getElementById('oilTempFill').style.width = Math.min(oilTempF / 300 * 100, 100) + '%';
+            if (data.oil_temp !== null && data.oil_temp !== undefined) {
+                const oilTempF = data.oil_temp * 1.8 + 32;
+                document.getElementById('oilTempValue').textContent = Math.round(oilTempF);
+                document.getElementById('oilTempFill').style.width = Math.min(oilTempF / 300 * 100, 100) + '%';
+            } else {
+                document.getElementById('oilTempValue').textContent = '--';
+                document.getElementById('oilTempFill').style.width = '0%';
+            }
 
-            document.getElementById('fuelValue').textContent = Math.round(data.fuel_pressure || 0);
-            document.getElementById('fuelFill').style.width = Math.min((data.fuel_pressure || 0) / 60 * 100, 100) + '%';
+            if (data.fuel_pressure !== null && data.fuel_pressure !== undefined) {
+                document.getElementById('fuelValue').textContent = Math.round(data.fuel_pressure);
+                document.getElementById('fuelFill').style.width = Math.min(data.fuel_pressure / 60 * 100, 100) + '%';
+            } else {
+                document.getElementById('fuelValue').textContent = '--';
+                document.getElementById('fuelFill').style.width = '0%';
+            }
 
-            document.getElementById('throttleValue').textContent = Math.round(data.throttle_pct || 0);
-            document.getElementById('throttleFill').style.width = (data.throttle_pct || 0) + '%';
+            if (data.throttle_pct !== null && data.throttle_pct !== undefined) {
+                document.getElementById('throttleValue').textContent = Math.round(data.throttle_pct);
+                document.getElementById('throttleFill').style.width = data.throttle_pct + '%';
+            } else {
+                document.getElementById('throttleValue').textContent = '--';
+                document.getElementById('throttleFill').style.width = '0%';
+            }
 
             // Intake Air Temperature (IAT)
             const iatF = (data.intake_air_temp || 0) * 1.8 + 32;
@@ -4275,25 +4478,48 @@ DASHBOARD_HTML = '''
             const battPct = Math.max(0, Math.min(((data.battery_voltage || 12) - 10) / 6 * 100, 100));
             document.getElementById('batteryFill').style.width = battPct + '%';
 
-            // Warning states for new gauges
-            setGaugeState('oilTempGauge', oilTempF > 280 ? 'danger' : oilTempF > 250 ? 'warning' : '');
-            setGaugeState('intakeTempGauge', iatF > 150 ? 'danger' : iatF > 130 ? 'warning' : '');
-            setGaugeState('batteryGauge', (data.battery_voltage || 12) < 11 ? 'danger' : (data.battery_voltage || 12) < 12 ? 'warning' : '');
-
-            // Fuel level display
-            const fuelPct = data.fuel_level_pct || 0;
-            document.getElementById('fuelLevelPct').textContent = Math.round(fuelPct);
-            document.getElementById('fuelLevelFill').style.width = fuelPct + '%';
-            // Add danger class if fuel is critically low
-            const fuelFill = document.getElementById('fuelLevelFill');
-            if (fuelPct < 10) {
-                fuelFill.classList.add('fuel-critical');
+            // PIT-CAN-1: Warning states for new gauges - only when data is valid
+            if (data.oil_temp !== null && data.oil_temp !== undefined) {
+                const oilTempF = data.oil_temp * 1.8 + 32;
+                setGaugeState('oilTempGauge', oilTempF > 280 ? 'danger' : oilTempF > 250 ? 'warning' : '');
             } else {
-                fuelFill.classList.remove('fuel-critical');
+                setGaugeState('oilTempGauge', '');
+            }
+            if (data.intake_air_temp !== null && data.intake_air_temp !== undefined) {
+                const iatF = data.intake_air_temp * 1.8 + 32;
+                setGaugeState('intakeTempGauge', iatF > 150 ? 'danger' : iatF > 130 ? 'warning' : '');
+            } else {
+                setGaugeState('intakeTempGauge', '');
+            }
+            if (data.battery_voltage !== null && data.battery_voltage !== undefined) {
+                setGaugeState('batteryGauge', data.battery_voltage < 11 ? 'danger' : data.battery_voltage < 12 ? 'warning' : '');
+            } else {
+                setGaugeState('batteryGauge', '');
             }
 
-            // Vehicle tab
-            document.getElementById('speedValue').textContent = Math.round(data.speed_mph || 0);
+            // PIT-CAN-1: Fuel level display - handle null
+            if (data.fuel_level_pct !== null && data.fuel_level_pct !== undefined) {
+                document.getElementById('fuelLevelPct').textContent = Math.round(data.fuel_level_pct);
+                document.getElementById('fuelLevelFill').style.width = data.fuel_level_pct + '%';
+                // Add danger class if fuel is critically low
+                const fuelFill = document.getElementById('fuelLevelFill');
+                if (data.fuel_level_pct < 10) {
+                    fuelFill.classList.add('fuel-critical');
+                } else {
+                    fuelFill.classList.remove('fuel-critical');
+                }
+            } else {
+                document.getElementById('fuelLevelPct').textContent = '--';
+                document.getElementById('fuelLevelFill').style.width = '0%';
+                document.getElementById('fuelLevelFill').classList.remove('fuel-critical');
+            }
+
+            // Vehicle tab - PIT-CAN-1: Handle null speed
+            if (data.speed_mph !== null && data.speed_mph !== undefined) {
+                document.getElementById('speedValue').textContent = Math.round(data.speed_mph);
+            } else {
+                document.getElementById('speedValue').textContent = '--';
+            }
 
             // NOTE: Suspension update code removed - not currently in use
 
@@ -4314,32 +4540,44 @@ DASHBOARD_HTML = '''
             updateWeather(data.lat || 0, data.lon || 0);
 
             // Camera status
+            // PIT-COMMS-1: Guard getElementById — productionCamera element may not exist
             if (data.current_camera) {
                 currentCamera = data.current_camera;
-                document.getElementById('productionCamera').textContent = currentCamera.toUpperCase();
+                const prodCamEl = document.getElementById('productionCamera');
+                if (prodCamEl) prodCamEl.textContent = currentCamera.toUpperCase();
                 updateCameraDisplay();
             }
 
             // Status indicators (now already declared above)
-            const canFresh = data.last_update_ms && (now - data.last_update_ms) < 2000;
-            const gpsFresh = (data.satellites || 0) > 0;
+            // EDGE-STATUS-1: Wider freshness windows — CAN 5s (bus can be intermittent), GPS 10s + satellites
+            const canFresh = data.last_update_ms && (now - data.last_update_ms) < 5000;
+            const gpsFresh = (data.satellites || 0) > 0 && data.gps_ts_ms && (now - data.gps_ts_ms) < 10000;
 
-            // EDGE-3: Use device_status fields for richer status display
-            setDeviceStatusDot('canStatus', data.can_device_status || 'unknown', canFresh);
-            setDeviceStatusDot('gpsStatus', data.gps_device_status || 'unknown', gpsFresh);
-            setStatusDot('cloudStatus', data.cloud_connected);
-            setDeviceStatusDot('antStatus', data.ant_device_status || 'unknown', data.heart_rate > 0);
+            // EDGE-STATUS-1: Tri-state status with boot window
+            const bootTs = data.boot_ts_ms || 0;
+            setDeviceStatusDot('canStatus', data.can_device_status || 'unknown', canFresh, bootTs);
+            setDeviceStatusDot('gpsStatus', data.gps_device_status || 'unknown', gpsFresh, bootTs);
+            setDeviceStatusDot('antStatus', data.ant_device_status || 'unknown', data.heart_rate > 0, bootTs);
+            // EDGE-STATUS-1: Cloud dot uses cloud_detail for tri-state
+            setCloudStatusDot('cloudStatus', data.cloud_detail || 'not_configured', data.cloud_connected);
             document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString();
 
-            // Offline banner
-            document.getElementById('offlineBanner').classList.toggle('active', !data.cloud_connected);
+            // (Banner update moved to top of updateDashboard — EDGE-CLOUD-2)
 
-            // Warning thresholds & alerts (coolantF already computed above)
-            setGaugeState('coolantGauge', coolantF > 230 ? 'danger' : coolantF > 210 ? 'warning' : '');
-            setGaugeState('oilPressGauge', (data.oil_pressure || 50) < 20 ? 'danger' : (data.oil_pressure || 50) < 30 ? 'warning' : '');
-
-            // Critical alerts
-            checkAlerts(data, coolantF);
+            // PIT-CAN-1: Warning thresholds & alerts - only apply when data is valid
+            if (data.coolant_temp !== null && data.coolant_temp !== undefined) {
+                const coolantF = data.coolant_temp * 1.8 + 32;
+                setGaugeState('coolantGauge', coolantF > 230 ? 'danger' : coolantF > 210 ? 'warning' : '');
+                checkAlerts(data, coolantF);
+            } else {
+                setGaugeState('coolantGauge', '');
+                checkAlerts(data, null);
+            }
+            if (data.oil_pressure !== null && data.oil_pressure !== undefined) {
+                setGaugeState('oilPressGauge', data.oil_pressure < 20 ? 'danger' : data.oil_pressure < 30 ? 'warning' : '');
+            } else {
+                setGaugeState('oilPressGauge', '');
+            }
 
             // Heart rate - Enhanced zone tracking (Feature 3)
             updateHeartRateDisplay(data.heart_rate || 0);
@@ -4367,37 +4605,76 @@ DASHBOARD_HTML = '''
 
             // P1: Update race position (from cloud leaderboard)
             updateRacePosition(data);
+            } catch (uiErr) {
+                // EDGE-CLOUD-2: DOM errors must not crash the SSE handler.
+                // Banner was already updated above, so connection status is always accurate.
+                console.warn('Dashboard UI update error (non-fatal):', uiErr);
+            }
         }
 
         // EDGE-3: Enhanced status dot with three states
         function setStatusDot(id, ok) {
             const el = document.getElementById(id);
+            if (!el) return;
             el.classList.toggle('ok', ok);
             el.classList.remove('warning');
         }
 
-        // EDGE-3: Set status dot with device_status awareness
-        // status: "connected" → green, "missing"/"timeout" → yellow, "simulated" → pulsing yellow, "unknown" → gray
-        function setDeviceStatusDot(id, deviceStatus, dataOk) {
+        // EDGE-STATUS-1: Cloud status dot using cloud_detail
+        // GREEN: healthy, YELLOW: event_not_live / not_configured, RED: unreachable / auth_rejected
+        function setCloudStatusDot(id, detail, connected) {
             const el = document.getElementById(id);
+            if (!el) return;
             el.classList.remove('ok', 'warning');
+            if (detail === 'healthy') {
+                el.classList.add('ok');
+                el.title = 'Cloud connected, event live';
+            } else if (detail === 'event_not_live') {
+                el.classList.add('warning');
+                el.title = 'Cloud connected, no active event';
+            } else if (detail === 'not_configured') {
+                el.classList.add('warning');
+                el.title = 'Cloud URL not configured';
+            } else if (detail === 'auth_rejected') {
+                el.title = 'Cloud auth rejected \u2014 check truck token';
+            } else {
+                // unreachable or unknown
+                el.title = 'Cloud unreachable';
+            }
+        }
+
+        // EDGE-STATUS-1: Tri-state status dot with boot window awareness
+        // GREEN: connected + data flowing
+        // YELLOW: present but waiting, or still within boot window (120s)
+        // RED: offline / missing after boot window
+        const BOOT_WINDOW_MS = 120000;
+        function setDeviceStatusDot(id, deviceStatus, dataOk, bootTsMs) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.classList.remove('ok', 'warning');
+            const now = Date.now();
+            const inBootWindow = bootTsMs && (now - bootTsMs) < BOOT_WINDOW_MS;
             if (deviceStatus === 'connected' && dataOk) {
                 el.classList.add('ok');
                 el.title = 'Hardware connected, data flowing';
-            } else if (deviceStatus === 'missing') {
+            } else if (deviceStatus === 'connected') {
                 el.classList.add('warning');
-                el.title = 'Hardware not detected';
+                el.title = 'Hardware connected, waiting for data';
             } else if (deviceStatus === 'simulated') {
                 el.classList.add('warning');
                 el.title = 'Running in simulation mode (no hardware)';
             } else if (deviceStatus === 'timeout') {
                 el.classList.add('warning');
                 el.title = 'Hardware connected but data timed out';
-            } else if (deviceStatus === 'connected') {
-                el.classList.add('ok');
-                el.title = 'Hardware connected, waiting for data';
+            } else if (deviceStatus === 'missing') {
+                el.classList.add('warning');
+                el.title = 'Hardware not detected';
+            } else if (deviceStatus === 'unknown' && inBootWindow) {
+                el.classList.add('warning');
+                el.title = 'Starting up\u2026 waiting for hardware detection';
             } else {
-                el.title = 'Status unknown';
+                // unknown after boot window or unexpected status → RED
+                el.title = 'Hardware not responding';
             }
         }
 
@@ -4407,25 +4684,26 @@ DASHBOARD_HTML = '''
             if (state) el.classList.add(state);
         }
 
+        // PIT-CAN-1: Only show alerts when CAN data is valid (not null)
         function checkAlerts(data, coolantF) {
             let alertMsg = null;
-            const oilTempF = (data.oil_temp || 0) * 1.8 + 32;
+            const oilTempF = (data.oil_temp !== null && data.oil_temp !== undefined) ? data.oil_temp * 1.8 + 32 : null;
 
-            // CRITICAL alerts (highest priority)
-            if (coolantF > 240) alertMsg = '🔥 CRITICAL: OVERHEATING - ' + Math.round(coolantF) + '°F';
-            else if ((data.oil_pressure || 50) < 15) alertMsg = '🛢️ CRITICAL: LOW OIL PRESSURE - ' + Math.round(data.oil_pressure) + ' PSI';
-            else if ((data.battery_voltage || 12) < 10.5) alertMsg = '🔋 CRITICAL: BATTERY FAILING - ' + (data.battery_voltage || 0).toFixed(1) + 'V';
+            // CRITICAL alerts (highest priority) - only check if data is valid
+            if (coolantF !== null && coolantF > 240) alertMsg = 'CRITICAL: OVERHEATING - ' + Math.round(coolantF) + '°F';
+            else if (data.oil_pressure !== null && data.oil_pressure !== undefined && data.oil_pressure < 15) alertMsg = 'CRITICAL: LOW OIL PRESSURE - ' + Math.round(data.oil_pressure) + ' PSI';
+            else if (data.battery_voltage !== null && data.battery_voltage !== undefined && data.battery_voltage < 10.5) alertMsg = 'CRITICAL: BATTERY FAILING - ' + data.battery_voltage.toFixed(1) + 'V';
 
             // HIGH alerts
-            else if ((data.fuel_level_pct || 100) < 5) alertMsg = '⛽ ALERT: FUEL CRITICAL - ' + Math.round(data.fuel_level_pct) + '%';
-            else if (oilTempF > 290) alertMsg = '🌡️ ALERT: OIL TOO HOT - ' + Math.round(oilTempF) + '°F';
-            else if ((data.heart_rate || 0) > 180) alertMsg = '❤️ ALERT: HIGH HEART RATE - ' + data.heart_rate + ' BPM';
+            else if (data.fuel_level_pct !== null && data.fuel_level_pct !== undefined && data.fuel_level_pct < 5) alertMsg = 'ALERT: FUEL CRITICAL - ' + Math.round(data.fuel_level_pct) + '%';
+            else if (oilTempF !== null && oilTempF > 290) alertMsg = 'ALERT: OIL TOO HOT - ' + Math.round(oilTempF) + '°F';
+            else if ((data.heart_rate || 0) > 180) alertMsg = 'ALERT: HIGH HEART RATE - ' + data.heart_rate + ' BPM';
 
             // WARNING alerts (lower priority)
-            else if ((data.fuel_level_pct || 100) < 15) alertMsg = '⛽ WARNING: LOW FUEL - ' + Math.round(data.fuel_level_pct) + '%';
-            else if ((data.battery_voltage || 12) < 11.5) alertMsg = '🔋 WARNING: LOW BATTERY - ' + (data.battery_voltage || 0).toFixed(1) + 'V';
-            else if ((data.satellites || 0) === 0 && data.speed_mph > 10) alertMsg = '📡 WARNING: GPS SIGNAL LOST';
-            else if (coolantF > 225) alertMsg = '🌡️ WARNING: ENGINE GETTING HOT - ' + Math.round(coolantF) + '°F';
+            else if (data.fuel_level_pct !== null && data.fuel_level_pct !== undefined && data.fuel_level_pct < 15) alertMsg = 'WARNING: LOW FUEL - ' + Math.round(data.fuel_level_pct) + '%';
+            else if (data.battery_voltage !== null && data.battery_voltage !== undefined && data.battery_voltage < 11.5) alertMsg = 'WARNING: LOW BATTERY - ' + data.battery_voltage.toFixed(1) + 'V';
+            else if ((data.satellites || 0) === 0 && data.speed_mph > 10) alertMsg = 'WARNING: GPS SIGNAL LOST';
+            else if (coolantF !== null && coolantF > 225) alertMsg = 'WARNING: ENGINE GETTING HOT - ' + Math.round(coolantF) + '°F';
 
             if (alertMsg) {
                 showAlert(alertMsg);
@@ -4468,7 +4746,6 @@ DASHBOARD_HTML = '''
 
                 // Clean up the message for speech
                 const cleanText = text
-                    .replace(/🔥|🛢️|❤️|📡|⚠️|🌡️/g, '')
                     .replace(/CRITICAL:/g, 'Critical alert.')
                     .replace(/ALERT:/g, 'Alert.')
                     .replace(/WARNING:/g, 'Warning.')
@@ -4496,7 +4773,7 @@ DASHBOARD_HTML = '''
             voiceAlertsEnabled = !voiceAlertsEnabled;
             const btn = document.getElementById('voiceAlertBtn');
             if (btn) {
-                btn.textContent = voiceAlertsEnabled ? '🔊 Voice ON' : '🔇 Voice OFF';
+                btn.textContent = voiceAlertsEnabled ? 'Voice ON' : 'Voice OFF';
                 btn.classList.toggle('active', voiceAlertsEnabled);
             }
             // Test speak
@@ -4510,7 +4787,7 @@ DASHBOARD_HTML = '''
         let screenshotRefreshInterval = null;
 
         function updateCameraDisplay() {
-            ['chase', 'pov', 'roof', 'front'].forEach(cam => {
+            ['main', 'cockpit', 'chase', 'suspension'].forEach(cam => {
                 const isLive = streamingStatus.status === 'live' && streamingStatus.camera === cam;
                 const camData = screenshotData[cam] || {};
                 const status = camData.status || cameraStatus[cam] || 'offline';
@@ -4541,7 +4818,7 @@ DASHBOARD_HTML = '''
                 if (img && camData.has_screenshot) {
                     // Add cache-busting timestamp to force refresh
                     const ts = camData.last_capture_ms || Date.now();
-                    img.src = '/api/cameras/screenshot/' + cam + '?t=' + ts;
+                    img.src = '/api/cameras/preview/' + cam + '.jpg?t=' + ts;
                     img.style.display = 'block';
                     if (placeholder) placeholder.style.display = 'none';
                 } else if (img) {
@@ -4612,25 +4889,25 @@ DASHBOARD_HTML = '''
         async function refreshAllScreenshots() {
             const btn = document.getElementById('refreshScreenshotsBtn');
             btn.disabled = true;
-            btn.textContent = '⏳ Capturing...';
+            btn.textContent = 'Capturing...';
 
-            for (const cam of ['chase', 'pov', 'roof', 'front']) {
+            for (const cam of ['main', 'cockpit', 'chase', 'suspension']) {
                 await captureScreenshot(cam, true);
             }
 
             btn.disabled = false;
-            btn.textContent = '🔄 Refresh';
+            btn.textContent = 'Refresh';
             await pollScreenshotStatus();
         }
 
         // Capture single screenshot
         async function captureScreenshot(camera, silent = false) {
             try {
-                const resp = await fetch('/api/cameras/screenshot/' + camera + '/capture', { method: 'POST' });
+                const resp = await fetch('/api/cameras/preview/' + camera + '/capture', { method: 'POST' });
                 if (resp.ok && !silent) {
                     const data = await resp.json();
                     if (data.success) {
-                        showAlert('📷 ' + camera + ' captured', 'success');
+                        showAlert(camera + ' captured', 'success');
                     }
                 }
                 // Refresh status after capture
@@ -4652,7 +4929,7 @@ DASHBOARD_HTML = '''
             const title = document.getElementById('screenshotModalTitle');
             const time = document.getElementById('screenshotModalTime');
 
-            img.src = '/api/cameras/screenshot/' + camera + '?t=' + Date.now();
+            img.src = '/api/cameras/preview/' + camera + '.jpg?t=' + Date.now();
             title.textContent = camera.charAt(0).toUpperCase() + camera.slice(1) + ' Camera';
             time.textContent = camData.last_capture_ms ? new Date(camData.last_capture_ms).toLocaleString() : '--';
             modal.classList.add('active');
@@ -4686,13 +4963,25 @@ DASHBOARD_HTML = '''
         let streamingStatus = { status: 'idle', camera: 'chase' };
 
         async function pollStreamingStatus() {
+            // EDGE-PROG-3: Use Program State as authoritative source
             try {
-                const resp = await fetch('/api/streaming/status');
+                const resp = await fetch('/api/program/status');
                 if (resp.ok) {
-                    streamingStatus = await resp.json();
+                    const progState = await resp.json();
+                    // Map program_state fields to streaming UI expectations
+                    streamingStatus = {
+                        status: progState.streaming ? 'live' : (progState.last_error ? 'error' : 'idle'),
+                        camera: progState.active_camera,
+                        started_at: progState.last_stream_start_at,
+                        error: progState.last_error,
+                        youtube_configured: progState.youtube_configured,
+                        youtube_url: progState.youtube_url,
+                        stream_profile: progState.stream_profile,
+                        supervisor: progState.supervisor_state ? { state: progState.supervisor_state } : null,
+                    };
                     updateStreamingUI();
                 }
-            } catch (e) { console.log('Streaming status poll failed:', e); }
+            } catch (e) { console.log('Program status poll failed:', e); }
         }
 
         function updateStreamingUI() {
@@ -4778,13 +5067,16 @@ DASHBOARD_HTML = '''
                 cameraSelect.value = streamingStatus.camera;
             }
 
-            // Check YouTube configuration
+            // LINK-3: Check YouTube configuration — show visible warning, not just tooltip
+            const configWarning = document.getElementById('streamConfigWarning');
             if (!streamingStatus.youtube_configured) {
                 startBtn.disabled = true;
                 startBtn.title = 'Configure YouTube stream key in Settings first';
+                if (configWarning) configWarning.style.display = 'inline';
             } else {
                 startBtn.disabled = false;
                 startBtn.title = '';
+                if (configWarning) configWarning.style.display = 'none';
             }
 
             // Update YouTube URL in Stream Info section
@@ -4801,9 +5093,12 @@ DASHBOARD_HTML = '''
         async function startStream() {
             const camera = document.getElementById('streamCameraSelect').value;
             const startBtn = document.getElementById('startStreamBtn');
+            const errorSpan = document.getElementById('streamError');
 
             startBtn.disabled = true;
-            startBtn.textContent = '⏳ Starting...';
+            startBtn.textContent = 'Starting...';
+            // LINK-3: Clear previous error
+            if (errorSpan) { errorSpan.style.display = 'none'; errorSpan.textContent = ''; }
 
             try {
                 const resp = await fetch('/api/streaming/start', {
@@ -4815,15 +5110,25 @@ DASHBOARD_HTML = '''
 
                 if (!data.success) {
                     showAlert('Stream failed: ' + data.error, 'warning');
+                    // LINK-3: Also persist error in the UI so it doesn't vanish after 3s
+                    if (errorSpan) {
+                        errorSpan.textContent = data.error;
+                        errorSpan.style.display = 'inline';
+                    }
                 } else {
                     showAlert('Stream started on ' + camera, 'success');
                 }
             } catch (e) {
                 showAlert('Failed to start stream: ' + e.message, 'warning');
+                // LINK-3: Persist network/fetch errors
+                if (errorSpan) {
+                    errorSpan.textContent = e.message;
+                    errorSpan.style.display = 'inline';
+                }
             }
 
             startBtn.disabled = false;
-            startBtn.textContent = '▶️ Start Stream';
+            startBtn.textContent = 'Start Stream';
             await pollStreamingStatus();
         }
 
@@ -4831,7 +5136,7 @@ DASHBOARD_HTML = '''
             const stopBtn = document.getElementById('stopStreamBtn');
 
             stopBtn.disabled = true;
-            stopBtn.textContent = '⏳ Stopping...';
+            stopBtn.textContent = 'Stopping...';
 
             try {
                 const resp = await fetch('/api/streaming/stop', { method: 'POST' });
@@ -4847,17 +5152,17 @@ DASHBOARD_HTML = '''
             }
 
             stopBtn.disabled = false;
-            stopBtn.textContent = '⏹️ Stop Stream';
+            stopBtn.textContent = 'Stop Stream';
             await pollStreamingStatus();
         }
 
         async function handleCameraSelectChange(camera) {
-            // If currently streaming, switch camera via API
+            // EDGE-PROG-3: Use Program State endpoint for camera switching
             if (streamingStatus.status === 'live' || streamingStatus.status === 'starting') {
                 const select = document.getElementById('streamCameraSelect');
                 select.disabled = true;
                 try {
-                    const resp = await fetch('/api/streaming/switch-camera', {
+                    const resp = await fetch('/api/program/switch', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ camera: camera })
@@ -4981,7 +5286,18 @@ DASHBOARD_HTML = '''
                     const data = await resp.json();
                     const pct = Math.min(100, Math.max(0, (data.level + 60) * (100/60)));
                     document.getElementById('audioLevel').style.width = pct + '%';
-                    setStatusDot('audioStatus', data.level > -50);
+                    // EDGE-STATUS-1: Audio tri-state: GREEN if signal, YELLOW if system up but quiet
+                    const audioEl = document.getElementById('audioStatus');
+                    if (audioEl) {
+                        audioEl.classList.remove('ok', 'warning');
+                        if (data.level > -50) {
+                            audioEl.classList.add('ok');
+                            audioEl.title = 'Audio detected';
+                        } else {
+                            audioEl.classList.add('warning');
+                            audioEl.title = 'Audio system running, no signal';
+                        }
+                    }
                     if (data.last_activity) {
                         const ago = Math.floor((Date.now() - data.last_activity) / 1000);
                         document.getElementById('lastHeard').textContent = ago < 60 ? ago + 's ago' : Math.floor(ago/60) + 'm ago';
@@ -5048,7 +5364,7 @@ DASHBOARD_HTML = '''
 
             const btn = document.querySelector('.send-note-btn');
             const originalText = btn.textContent;
-            btn.textContent = '⏳ Sending...';
+            btn.textContent = 'Sending...';
             btn.disabled = true;
 
             try {
@@ -5061,19 +5377,20 @@ DASHBOARD_HTML = '''
                 if (resp.ok) {
                     const data = await resp.json();
                     document.getElementById('pitNoteInput').value = '';
-                    // Show success with sync status
+                    // PIT-COMMS-1: Show success with sync status
                     if (data.note && data.note.synced) {
-                        btn.textContent = '✓ Sent & Synced!';
+                        btn.textContent = 'Sent!';
                         btn.style.background = 'var(--accent-green)';
                     } else {
-                        btn.textContent = '✓ Saved (offline)';
+                        // Note is queued locally, background sync will retry
+                        btn.textContent = 'Queued (will sync)';
                         btn.style.background = 'var(--accent-yellow, #f59e0b)';
                     }
                     // Refresh history
                     loadPitNotesHistory();
                 } else {
                     const errData = await resp.json().catch(() => ({}));
-                    btn.textContent = '✗ Failed: ' + (errData.error || resp.statusText);
+                    btn.textContent = 'Failed: ' + (errData.error || resp.statusText);
                     btn.style.background = 'var(--danger)';
                 }
 
@@ -5084,7 +5401,7 @@ DASHBOARD_HTML = '''
                 }, 2500);
             } catch (e) {
                 console.error('Failed to send pit note', e);
-                btn.textContent = '✗ Network Error';
+                btn.textContent = 'Network Error';
                 btn.style.background = 'var(--danger)';
                 setTimeout(() => {
                     btn.textContent = originalText;
@@ -5105,7 +5422,7 @@ DASHBOARD_HTML = '''
                     if (data.notes && data.notes.length > 0) {
                         historyEl.innerHTML = data.notes.map(n => {
                             const time = new Date(n.timestamp).toLocaleTimeString();
-                            const syncIcon = n.synced ? '☁️' : '💾';
+                            const syncIcon = n.synced ? 'Cloud' : 'Local';
                             return `<div class="pit-note-item">
                                 <span class="pit-note-time">${time}</span>
                                 <span class="pit-note-text">${escapeHtml(n.text)}</span>
@@ -5127,8 +5444,46 @@ DASHBOARD_HTML = '''
             return div.innerHTML;
         }
 
-        // Load notes history on page load
-        document.addEventListener('DOMContentLoaded', loadPitNotesHistory);
+        // PIT-COMMS-1: Load and display sync status
+        async function loadPitNotesSyncStatus() {
+            try {
+                const resp = await fetch('/api/pit-notes/sync-status');
+                if (resp.ok) {
+                    const data = await resp.json();
+                    const cloudEl = document.getElementById('pitNotesCloudStatus');
+                    const queueEl = document.getElementById('pitNotesQueueCount');
+
+                    if (cloudEl) {
+                        if (data.waiting_for_event) {
+                            cloudEl.innerHTML = 'Cloud: <span style="color:var(--accent-yellow);">Waiting for event assignment</span>';
+                        } else if (data.cloud_connected) {
+                            cloudEl.innerHTML = 'Cloud: <span style="color:var(--accent-green);">Connected</span>';
+                        } else if (data.cloud_configured) {
+                            cloudEl.innerHTML = 'Cloud: <span style="color:var(--accent-yellow);">Disconnected</span>';
+                        } else {
+                            cloudEl.innerHTML = 'Cloud: <span style="color:var(--text-muted);">Not configured</span>';
+                        }
+                    }
+                    if (queueEl) {
+                        if (data.queued > 0) {
+                            queueEl.innerHTML = `Queued: <span style="color:var(--accent-yellow);">${data.queued}</span>`;
+                        } else {
+                            queueEl.textContent = 'Queued: 0';
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error('Failed to load pit notes sync status', e);
+            }
+        }
+
+        // Load notes history and sync status on page load
+        document.addEventListener('DOMContentLoaded', () => {
+            loadPitNotesHistory();
+            loadPitNotesSyncStatus();
+            // Poll sync status every 10 seconds
+            setInterval(loadPitNotesSyncStatus, 10000);
+        });
 
         // ============ P1: Fuel Strategy ============
         let fuelConfigVisible = false;
@@ -5139,14 +5494,15 @@ DASHBOARD_HTML = '''
         }
 
         async function promptFuelLevel() {
-            // Get current values for the prompt
+            // PIT-FUEL-0: Get tank capacity from API (single source of truth)
             let currentFuel = '--';
-            let tankCapacity = 35;
+            let tankCapacity = null;
+            const MAX_CAPACITY = 250;  // PIT-FUEL-0: Must match MAX_TANK_CAPACITY_GAL
             try {
                 const resp = await fetch('/api/fuel/status');
                 if (resp.ok) {
                     const data = await resp.json();
-                    tankCapacity = data.tank_capacity_gal || 35;
+                    tankCapacity = data.tank_capacity_gal;
                     if (data.fuel_set && data.current_fuel_gal !== null) {
                         currentFuel = data.current_fuel_gal.toFixed(1);
                     }
@@ -5155,8 +5511,15 @@ DASHBOARD_HTML = '''
                 console.error('Failed to get current fuel level', e);
             }
 
+            if (tankCapacity === null || tankCapacity === undefined) {
+                showAlert('Could not load tank capacity. Please refresh the page.', 'error');
+                return;
+            }
+
+            // PIT-FUEL-0: Prompt shows max possible range (250), not just current tank capacity.
+            // This prevents the hidden "change config first" workflow.
             const input = prompt(
-                `Enter current fuel level (0 - ${tankCapacity} gallons):`,
+                `Enter current fuel level in gallons (0 - ${MAX_CAPACITY}).\nCurrent tank capacity: ${tankCapacity} gal (auto-adjusts if needed).`,
                 currentFuel === '--' ? '' : currentFuel
             );
 
@@ -5167,20 +5530,31 @@ DASHBOARD_HTML = '''
                 showAlert('Invalid fuel level', 'error');
                 return;
             }
-            if (fuelLevel < 0 || fuelLevel > tankCapacity) {
-                showAlert(`Fuel must be between 0 and ${tankCapacity} gallons`, 'error');
+            if (fuelLevel < 0 || fuelLevel > MAX_CAPACITY) {
+                showAlert(`Fuel must be between 0 and ${MAX_CAPACITY} gallons`, 'error');
                 return;
             }
 
-            // Update fuel level
+            // PIT-FUEL-0: If fuel level > current tank capacity, auto-expand capacity.
+            // This eliminates the hidden two-step workflow that blocked values >95.
+            const payload = { current_fuel_gal: fuelLevel };
+            if (fuelLevel > tankCapacity) {
+                payload.tank_capacity_gal = fuelLevel;
+            }
+
+            // Update fuel level (and capacity if needed)
             try {
                 const resp = await fetch('/api/fuel/update', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ current_fuel_gal: fuelLevel })
+                    body: JSON.stringify(payload)
                 });
                 if (resp.ok) {
-                    showAlert(`Fuel set to ${fuelLevel.toFixed(1)} gallons`, 'success');
+                    let msg = `Fuel set to ${fuelLevel.toFixed(1)} gallons`;
+                    if (fuelLevel > tankCapacity) {
+                        msg += ` (tank capacity updated to ${fuelLevel} gal)`;
+                    }
+                    showAlert(msg, 'success');
                     loadFuelStatus();
                 } else {
                     const err = await resp.json();
@@ -5196,12 +5570,12 @@ DASHBOARD_HTML = '''
             const tankCapacity = parseFloat(document.getElementById('tankCapacityInput').value);
             const mpg = parseFloat(document.getElementById('fuelMpgInput').value);
 
-            if (isNaN(tankCapacity) || tankCapacity < 5 || tankCapacity > 250) {
-                showAlert('Tank capacity must be 5-250 gallons', 'error');
+            if (isNaN(tankCapacity) || tankCapacity < 1 || tankCapacity > 250) {
+                showAlert('Tank capacity must be 1-250 gallons', 'error');
                 return;
             }
-            if (isNaN(mpg) || mpg < 0.5 || mpg > 10.0) {
-                showAlert('MPG must be 0.5-10.0', 'error');
+            if (isNaN(mpg) || mpg < 0.1 || mpg > 30) {
+                showAlert('MPG must be 0.1-30', 'error');
                 return;
             }
 
@@ -5250,9 +5624,10 @@ DASHBOARD_HTML = '''
                 if (resp.ok) {
                     const data = await resp.json();
 
-                    // Update config inputs
-                    document.getElementById('tankCapacityInput').value = data.tank_capacity_gal || 35;
-                    document.getElementById('fuelMpgInput').value = data.consumption_rate_mpg || 6;
+                    // PIT-FUEL-1: Update config inputs from API (single source of truth)
+                    // No hardcoded fallbacks - backend always returns configured values
+                    document.getElementById('tankCapacityInput').value = data.tank_capacity_gal;
+                    document.getElementById('fuelMpgInput').value = data.consumption_rate_mpg;
 
                     // Check if fuel is set
                     if (!data.fuel_set || data.current_fuel_gal === null) {
@@ -5454,11 +5829,19 @@ DASHBOARD_HTML = '''
                 document.getElementById('positionDisplay').classList.remove('leading');
             }
 
+            // PROGRESS-3: Miles remaining display
+            const milesEl = document.getElementById('milesRemainingValue');
+            if (data.miles_remaining != null) {
+                milesEl.textContent = data.miles_remaining.toFixed(1) + ' mi remaining';
+            } else {
+                milesEl.textContent = '\u2014';
+            }
+
             // Update lap number
             document.getElementById('lapNumber').textContent = data.lap_number || 0;
             document.getElementById('lastCheckpoint').textContent = data.last_checkpoint || '--';
 
-            // P2: Update competitor tracking
+            // PROGRESS-3: Update competitor tracking with real data
             updateCompetitors(data);
         }
 
@@ -5616,10 +5999,8 @@ DASHBOARD_HTML = '''
             return codes[code] || 'Unknown';
         }
 
-        // ============ P2: Competitor Tracking ============
+        // ============ PROGRESS-3: Competitor Tracking ============
         function updateCompetitors(data) {
-            // This would typically come from the leaderboard API
-            // For now, show placeholder
             const panel = document.getElementById('competitorsPanel');
 
             if (!data.race_position || data.race_position === 0) {
@@ -5627,29 +6008,53 @@ DASHBOARD_HTML = '''
                 return;
             }
 
-            // In a full implementation, we'd fetch nearby competitors from the API
-            // For now, show position context
+            // Check if course progress is available
+            if (data.progress_miles == null && data.competitor_ahead == null && data.competitor_behind == null) {
+                // No course progress data — show basic position context
+                let html = '';
+                if (data.race_position === 1) {
+                    html += '<div class="competitor-item ahead"><span class="competitor-num">P1</span><span class="competitor-name">YOU ARE LEADING</span><span class="competitor-delta">P1</span></div>';
+                }
+                if (data.race_position < data.total_vehicles) {
+                    html += '<div class="competitor-item loading">No course progress available</div>';
+                }
+                panel.innerHTML = html || '<div class="competitor-item loading">No course progress available</div>';
+                return;
+            }
+
             let html = '';
 
-            if (data.race_position > 1) {
+            // Competitor ahead
+            if (data.competitor_ahead) {
+                const a = data.competitor_ahead;
+                const gapText = a.gap_miles != null ? `${a.gap_miles.toFixed(1)} mi ahead` : '\u2014';
                 html += `<div class="competitor-item ahead">
-                    <span class="competitor-num">P${data.race_position - 1}</span>
-                    <span class="competitor-name">Vehicle ahead</span>
-                    <span class="competitor-delta ahead">+${((data.delta_to_leader_ms || 0) / 1000).toFixed(1)}s gap</span>
+                    <span class="competitor-num">#${a.vehicle_number}</span>
+                    <span class="competitor-name">${a.team_name || ''}</span>
+                    <span class="competitor-delta ahead">${gapText}</span>
                 </div>`;
-            } else {
+            } else if (data.race_position === 1) {
                 html += `<div class="competitor-item ahead">
                     <span class="competitor-num">P1</span>
-                    <span class="competitor-name">YOU ARE LEADING!</span>
-                    <span class="competitor-delta">🏆</span>
+                    <span class="competitor-name">YOU ARE LEADING</span>
+                    <span class="competitor-delta">P1</span>
                 </div>`;
             }
 
-            if (data.race_position < data.total_vehicles) {
+            // Competitor behind
+            if (data.competitor_behind) {
+                const b = data.competitor_behind;
+                const gapText = b.gap_miles != null ? `${b.gap_miles.toFixed(1)} mi behind` : '\u2014';
                 html += `<div class="competitor-item behind">
-                    <span class="competitor-num">P${data.race_position + 1}</span>
-                    <span class="competitor-name">Vehicle behind</span>
-                    <span class="competitor-delta behind">Chasing</span>
+                    <span class="competitor-num">#${b.vehicle_number}</span>
+                    <span class="competitor-name">${b.team_name || ''}</span>
+                    <span class="competitor-delta behind">${gapText}</span>
+                </div>`;
+            } else if (data.race_position >= data.total_vehicles) {
+                html += `<div class="competitor-item behind">
+                    <span class="competitor-num">\u2014</span>
+                    <span class="competitor-name">No vehicle behind</span>
+                    <span class="competitor-delta">\u2014</span>
                 </div>`;
             }
 
@@ -5671,13 +6076,14 @@ DASHBOARD_HTML = '''
 
         // ============ Device Management ============
         let detectedDevices = { cameras: [], gps: null, ant: null, can: null, usb: [] };
-        let cameraMappings = { chase: '', pov: '', roof: '', front: '' };
+        // CAM-CONTRACT-1B: Canonical 4-camera slot mappings
+        let cameraMappings = { main: '', cockpit: '', chase: '', suspension: '' };
 
         async function scanDevices() {
             const btn = document.getElementById('scanDevicesBtn');
             const status = document.getElementById('deviceScanStatus');
             btn.disabled = true;
-            btn.textContent = '⏳ Scanning...';
+            btn.textContent = 'Scanning...';
             status.textContent = 'Scanning for connected devices...';
 
             try {
@@ -5698,7 +6104,7 @@ DASHBOARD_HTML = '''
             }
 
             btn.disabled = false;
-            btn.textContent = '🔄 Scan Devices';
+            btn.textContent = 'Scan Devices';
         }
 
         function updateDeviceUI(data) {
@@ -5707,7 +6113,7 @@ DASHBOARD_HTML = '''
             if (data.cameras && data.cameras.length > 0) {
                 cameraList.innerHTML = data.cameras.map(cam => `
                     <div class="device-item ${cam.status}">
-                        <span class="device-icon">📹</span>
+                        <span class="device-icon">CAM</span>
                         <div class="device-info">
                             <div class="device-name">${cam.name || 'USB Camera'}</div>
                             <div class="device-path">${cam.device}</div>
@@ -5719,7 +6125,8 @@ DASHBOARD_HTML = '''
                 // Populate camera mapping dropdowns
                 const options = '<option value="">-- Not assigned --</option>' +
                     data.cameras.map(cam => `<option value="${cam.device}">${cam.name || cam.device}</option>`).join('');
-                ['Chase', 'Pov', 'Roof', 'Front'].forEach(name => {
+                // CAM-CONTRACT-1B: Populate canonical 4-camera slot dropdowns
+                ['Main', 'Cockpit', 'Chase', 'Suspension'].forEach(name => {
                     document.getElementById('mapping' + name).innerHTML = options;
                 });
 
@@ -5782,7 +6189,7 @@ DASHBOARD_HTML = '''
             if (data.usb && data.usb.length > 0) {
                 document.getElementById('allUsbDevicesList').innerHTML = data.usb.map(dev => `
                     <div class="device-item online">
-                        <span class="device-icon">🔌</span>
+                        <span class="device-icon">USB</span>
                         <div class="device-info">
                             <div class="device-name">${dev.product || 'USB Device'}</div>
                             <div class="device-path">${dev.vendor_id}:${dev.product_id} - ${dev.manufacturer || 'Unknown'}</div>
@@ -5791,13 +6198,41 @@ DASHBOARD_HTML = '''
                 `).join('');
             }
 
-            // Update service status
+            // PIT-SVC-2: Unified service status model
+            // Backend returns per-service: {state, label, details}
+            // state: OK | WARN | ERROR | OFF | UNKNOWN
             if (data.services) {
-                Object.entries(data.services).forEach(([name, status]) => {
-                    const el = document.getElementById('svc' + name.charAt(0).toUpperCase() + name.slice(1).replace('argus-', '').replace('-', ''));
-                    if (el) {
+                // Map service key (e.g. 'gps', 'can', 'uplink') to DOM element ID suffix
+                const svcIdMap = {
+                    'gps': 'Gps', 'can-setup': 'CanSetup', 'can': 'Can',
+                    'ant': 'Ant', 'uplink': 'Uplink', 'video': 'Video'
+                };
+                Object.entries(data.services).forEach(([name, info]) => {
+                    const idSuffix = svcIdMap[name];
+                    if (!idSuffix) return;
+                    const el = document.getElementById('svc' + idSuffix);
+                    const detailEl = document.getElementById('svc' + idSuffix + 'Detail');
+                    if (!el) return;
+                    // Handle both unified model (object) and legacy (string) formats
+                    if (typeof info === 'object' && info.state) {
+                        el.textContent = info.label;
+                        const cls = info.state === 'OK' ? 'ok'
+                            : info.state === 'WARN' ? 'warn'
+                            : info.state === 'ERROR' ? 'error'
+                            : info.state === 'OFF' ? 'off'
+                            : 'unknown';
+                        el.className = 'service-status ' + cls;
+                        if (detailEl) detailEl.textContent = info.details || '';
+                    } else {
+                        // Legacy fallback: raw systemd string
+                        const status = String(info);
                         el.textContent = status;
-                        el.className = 'service-status ' + (status === 'running' ? 'running' : status === 'stopped' ? 'stopped' : 'inactive');
+                        const cls = status === 'running' ? 'ok'
+                            : (status.includes('crashed') || status === 'failed') ? 'error'
+                            : status === 'stopped' ? 'error'
+                            : 'off';
+                        el.className = 'service-status ' + cls;
+                        if (detailEl) detailEl.textContent = '';
                     }
                 });
             }
@@ -5901,9 +6336,85 @@ DASHBOARD_HTML = '''
             });
         });
 
+        // ============ EDGE-CLOUD-2: Event Delegation (CSP compliance) ============
+        // Replaces all inline onclick/onchange/onerror handlers with data-attribute delegation.
+        // This allows script-src without 'unsafe-inline'.
+
+        // Helper: trigger hidden GPX file input
+        function triggerGpxUpload() {
+            var el = document.getElementById('gpxFileInput');
+            if (el) el.click();
+        }
+
+        // data-click="fn" [data-arg="val"] → click handler
+        document.addEventListener('click', function(e) {
+            var el = e.target.closest('[data-click]');
+            if (!el) return;
+            var fn = window[el.dataset.click];
+            if (!fn) return;
+            var arg = el.dataset.arg;
+            if (arg === 'true') fn(true);
+            else if (arg === 'false') fn(false);
+            else if (arg != null) fn(arg);
+            else fn();
+        });
+
+        // data-click-stop → stopPropagation
+        document.addEventListener('click', function(e) {
+            if (e.target.closest('[data-click-stop]')) e.stopPropagation();
+        });
+
+        // data-change-val="fn" [data-arg="val"] → fn(value) or fn(arg, value)
+        document.addEventListener('change', function(e) {
+            var el = e.target.closest('[data-change-val]');
+            if (el) {
+                var fn = window[el.dataset.changeVal];
+                var arg = el.dataset.arg;
+                if (fn) { arg != null ? fn(arg, e.target.value) : fn(e.target.value); }
+                return;
+            }
+            var bel = e.target.closest('[data-change-bool]');
+            if (bel) {
+                var fn2 = window[bel.dataset.changeBool];
+                if (fn2) fn2(e.target.checked);
+                return;
+            }
+            var cel = e.target.closest('[data-change-call]');
+            if (cel) {
+                var fn3 = window[cel.dataset.changeCall];
+                if (fn3) fn3();
+                return;
+            }
+            var evel = e.target.closest('[data-change-event]');
+            if (evel) {
+                var fn4 = window[evel.dataset.changeEvent];
+                if (fn4) fn4(e);
+                return;
+            }
+            // Template-generated: data-toggle-field + data-toggle-level
+            var tfel = e.target.closest('[data-toggle-field]');
+            if (tfel) {
+                toggleField(tfel.dataset.toggleField, tfel.dataset.toggleLevel, e.target.checked);
+            }
+        });
+
+        // data-hide-error on img → hide on error
+        document.querySelectorAll('[data-hide-error]').forEach(function(img) {
+            img.addEventListener('error', function() { this.style.display = 'none'; });
+        });
+
+        // Setup form submit handler (replaces onsubmit="return validateForm()")
+        var setupForm = document.getElementById('setupForm');
+        if (setupForm) {
+            setupForm.addEventListener('submit', function(e) {
+                if (!validateForm()) e.preventDefault();
+            });
+        }
+
         // ============ Init ============
         connect();
-        document.getElementById('vehicleNum').textContent = '#' + (window.VEHICLE_NUMBER || '---');
+        var vehicleNumEl = document.getElementById('vehicleNum');
+        if (vehicleNumEl) vehicleNumEl.textContent = '#' + (window.VEHICLE_NUMBER || '---');
     </script>
 </body>
 </html>
@@ -5915,7 +6426,7 @@ LOGIN_HTML = '''
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Argus Pit Crew - Login</title>
+    <title>Pit Crew - Login</title>
     <style>
         * { box-sizing: border-box; }
         body {
@@ -6004,8 +6515,8 @@ LOGIN_HTML = '''
 <body>
     <div class="login-box">
         <div class="logo">
-            <h1>Argus</h1>
-            <p>Pit Crew Dashboard</p>
+            <h1>Pit Crew</h1>
+            <p>Dashboard</p>
         </div>
 
         {error}
@@ -6028,7 +6539,7 @@ SETTINGS_HTML = '''
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Argus Pit Crew - Settings</title>
+    <title>Pit Crew - Settings</title>
     <style>
         * { box-sizing: border-box; }
         body {
@@ -6216,7 +6727,7 @@ SETTINGS_HTML = '''
                 <div class="sync-status">
                     <h4>Cloud Sync Status</h4>
                     <div id="syncStatus">Save settings to sync YouTube URL with the cloud server.</div>
-                    <button type="button" class="sync-btn" onclick="syncToCloud()">Sync to Cloud Now</button>
+                    <button type="button" class="sync-btn" data-click="syncToCloud">Sync to Cloud Now</button>
                 </div>
 
                 <button type="submit">Save Settings</button>
@@ -6224,7 +6735,9 @@ SETTINGS_HTML = '''
         </div>
     </div>
 
-    <script>
+    <script nonce="__CSP_NONCE__">
+        // PIT-VIS-0: Added nonce — this block was silently blocked by CSP,
+        // causing setFanVisibility "not defined" and all Team tab JS to fail.
         async function syncToCloud() {
             const statusEl = document.getElementById('syncStatus');
             statusEl.textContent = 'Syncing...';
@@ -6280,20 +6793,25 @@ SETTINGS_HTML = '''
             } catch (e) { console.warn('Failed to load team state:', e); }
         }
 
+        // PIT-VIS-0: Use CSS classes for reliable styling (--accent-green was undefined)
         function updateVisibilityUI(visible) {
             const badge = document.getElementById('visibilityBadge');
             const btnOn = document.getElementById('btnVisibilityOn');
             const btnOff = document.getElementById('btnVisibilityOff');
             if (visible) {
                 badge.textContent = 'Visible';
-                badge.style.background = 'var(--accent-green)';
-                btnOn.style.opacity = '1';
-                btnOff.style.opacity = '0.5';
+                badge.style.background = 'var(--success)';
+                badge.style.color = '#000';
+                btnOn.classList.add('vis-on');
+                btnOn.classList.remove('vis-off');
+                btnOff.classList.remove('vis-off', 'vis-on');
             } else {
                 badge.textContent = 'Hidden';
-                badge.style.background = 'var(--accent-red, #ef4444)';
-                btnOn.style.opacity = '0.5';
-                btnOff.style.opacity = '1';
+                badge.style.background = 'var(--danger)';
+                badge.style.color = '#fff';
+                btnOff.classList.add('vis-off');
+                btnOff.classList.remove('vis-on');
+                btnOn.classList.remove('vis-on', 'vis-off');
             }
         }
 
@@ -6311,7 +6829,7 @@ SETTINGS_HTML = '''
                 if (data.success) {
                     updateVisibilityUI(visible);
                     statusEl.textContent = data.synced
-                        ? 'Saved & synced to cloud ✓'
+                        ? 'Saved & synced to cloud'
                         : 'Saved locally (cloud sync unavailable)';
                     statusEl.style.color = data.synced ? '#22c55e' : '#f59e0b';
                 } else {
@@ -6338,10 +6856,10 @@ SETTINGS_HTML = '''
                     el.innerHTML = `
                         <span style="min-width:60px;">${label}</span>
                         <label style="font-size:0.7rem; color:var(--text-muted); display:flex; align-items:center; gap:2px; cursor:pointer;">
-                            <input type="checkbox" data-field="${field}" data-level="prod" ${inProd ? 'checked' : ''} onchange="toggleField('${field}','prod',this.checked)"> Prod
+                            <input type="checkbox" data-field="${field}" data-level="prod" ${inProd ? 'checked' : ''} data-toggle-field="${field}" data-toggle-level="prod"> Prod
                         </label>
                         <label style="font-size:0.7rem; color:var(--text-muted); display:flex; align-items:center; gap:2px; cursor:pointer;">
-                            <input type="checkbox" data-field="${field}" data-level="fan" ${inFan ? 'checked' : ''} onchange="toggleField('${field}','fan',this.checked)"> Fan
+                            <input type="checkbox" data-field="${field}" data-level="fan" ${inFan ? 'checked' : ''} data-toggle-field="${field}" data-toggle-level="fan"> Fan
                         </label>
                     `;
                     container.appendChild(el);
@@ -6405,7 +6923,7 @@ SETTINGS_HTML = '''
                 const data = await res.json();
                 if (data.success) {
                     statusEl.textContent = data.synced
-                        ? 'Saved & synced to cloud ✓'
+                        ? 'Saved & synced to cloud'
                         : 'Saved locally (cloud sync unavailable)';
                     statusEl.style.color = data.synced ? '#22c55e' : '#f59e0b';
                 } else {
@@ -6418,7 +6936,8 @@ SETTINGS_HTML = '''
             }
         }
 
-        // Load team state when tab is first shown
+        // PIT-VIS-0: Load team state on page load (deferred) + on tab click
+        loadTeamState();
         document.querySelector('[data-tab="team"]')?.addEventListener('click', () => {
             loadTeamState();
         });
@@ -6433,7 +6952,7 @@ SETUP_HTML = '''
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Argus Pit Crew - Setup</title>
+    <title>Pit Crew - Setup</title>
     <style>
         * { box-sizing: border-box; }
         body {
@@ -6555,8 +7074,8 @@ SETUP_HTML = '''
 <body>
     <div class="setup-box">
         <div class="logo">
-            <h1>Argus</h1>
-            <p>Pit Crew Dashboard Setup</p>
+            <h1>Pit Crew</h1>
+            <p>Dashboard Setup</p>
         </div>
 
         <div class="welcome">
@@ -6566,7 +7085,7 @@ SETUP_HTML = '''
 
         {error}
 
-        <form method="POST" action="/setup" id="setupForm" onsubmit="return validateForm()">
+        <form method="POST" action="/setup" id="setupForm">
             <div class="section-title">Security</div>
 
             <div class="form-group">
@@ -6666,6 +7185,8 @@ class PitCrewDashboard:
         self.config = config
         self.sessions = SessionManager(config.session_secret)
         self.telemetry = TelemetryState()
+        # EDGE-STATUS-1: Record boot time so JS can distinguish "still booting" (yellow) from "broken" (red)
+        self.telemetry.boot_ts_ms = int(time.time() * 1000)
         self.sse_clients: Set[web.StreamResponse] = set()
         self._running = False
         self._zmq_context = None
@@ -6673,32 +7194,46 @@ class PitCrewDashboard:
         self._zmq_socket_gps = None
         self._zmq_socket_ant = None  # ADDED: ANT+ heart rate subscriber
 
-        # ADDED: Camera status tracking
+        # CAM-CONTRACT-1B: Canonical 4-camera slots for status tracking
         self._camera_status: Dict[str, str] = {
+            "main": "offline",
+            "cockpit": "offline",
             "chase": "offline",
-            "pov": "offline",
-            "roof": "offline",
-            "front": "offline"
+            "suspension": "offline"
         }
         self._camera_devices = {
-            "chase": "/dev/video0",
-            "pov": "/dev/video2",
-            "roof": "/dev/video4",
-            "front": "/dev/video6"
+            "main": "/dev/video0",
+            "cockpit": "/dev/video2",
+            "chase": "/dev/video4",
+            "suspension": "/dev/video6"
+        }
+        # CAM-CONTRACT-1B: Backward compatibility aliases for legacy edge devices
+        self._camera_aliases = {
+            "pov": "cockpit",
+            "roof": "chase",
+            "front": "suspension",
+            "rear": "suspension",
         }
 
         # ADDED: Audio monitoring
         self._audio_level: float = -60.0  # dB
         self._last_audio_activity: int = 0
 
+        # LINK-1: Cloud status loop task handle for restart after settings change
+        self._cloud_status_task: Optional[asyncio.Task] = None
+
         # ADDED: Pit notes queue
+        # PIT-COMMS-1: Notes queue with background sync retry
         self._pit_notes: list = []
+        self._pit_notes_sync_task: Optional[asyncio.Task] = None
+        self._pit_notes_last_sync_attempt: int = 0
         self._load_pit_notes()  # Load persisted notes on startup
 
         # P1: Fuel strategy tracking
+        # PIT-FUEL-1: Uses constants for tank capacity (single source of truth)
         # NOTE: fuel_set=False until crew explicitly sets it - no fake values!
         self._fuel_strategy: Dict[str, Any] = {
-            'tank_capacity_gal': 35.0,  # Default 35 gallon tank (configurable up to 250)
+            'tank_capacity_gal': DEFAULT_TANK_CAPACITY_GAL,  # PIT-FUEL-1: Use constant
             'current_fuel_gal': None,   # None until set by crew (or MOTEC)
             'fuel_set': False,          # False until crew or ECU sets fuel level
             'consumption_rate_mpg': 2.0,  # Miles per gallon (default for off-road trucks)
@@ -6734,7 +7269,7 @@ class PitCrewDashboard:
 
         # ADDED: Screenshot capture system for stream control
         self._screenshot_cache_dir = '/opt/argus/cache/screenshots'
-        self._screenshot_interval = 60  # Capture every 60 seconds
+        self._screenshot_interval = 30  # PIT-CAM-PREVIEW-B: Capture every 30 seconds
         self._screenshot_timestamps: Dict[str, int] = {}  # Last capture time per camera
         self._screenshot_resolutions: Dict[str, str] = {}  # Resolution info per camera
         self._screenshot_capture_in_progress = False
@@ -6784,6 +7319,18 @@ class PitCrewDashboard:
         self._last_camera_switch_at: float = 0.0
         self._camera_switch_cooldown_s: float = 2.0  # Minimum seconds between switches
 
+        # EDGE-PROG-3: Program State - single authoritative source for Pit Crew UI & Cloud sync
+        self._program_state: Dict[str, Any] = {
+            'active_camera': 'chase',          # Currently active camera feed
+            'streaming': False,                # Is stream currently live?
+            'stream_destination': None,        # YouTube live URL or None
+            'last_switch_at': None,            # Timestamp (ms) of last camera switch
+            'last_stream_start_at': None,      # Timestamp (ms) of last stream start
+            'last_error': None,                # Last error message
+            'updated_at': None,                # Timestamp (ms) of last state update
+        }
+        self._load_program_state()
+
         # TEAM-3: Fan visibility state (migrated from cloud TeamDashboard)
         self._fan_visibility: bool = True  # True = visible to fans, False = hidden
         self._load_fan_visibility()
@@ -6804,10 +7351,14 @@ class PitCrewDashboard:
         return os.path.join(config_dir, 'fuel_state.json')
 
     def _load_fuel_state(self) -> None:
-        """Load persisted fuel state from disk."""
+        """Load persisted fuel state from disk.
+
+        PIT-FUEL-1: Enhanced logging to debug "reverting to 35" issues.
+        """
+        fuel_file = self._get_fuel_state_path()
         try:
-            fuel_file = self._get_fuel_state_path()
             if os.path.exists(fuel_file):
+                logger.info(f"PIT-FUEL-1: Loading fuel state from: {fuel_file}")
                 with open(fuel_file, 'r') as f:
                     saved_state = json.load(f)
                 # Merge saved state into current state (preserving defaults for missing fields)
@@ -6816,22 +7367,33 @@ class PitCrewDashboard:
                            'updated_at', 'updated_by', 'source']:
                     if key in saved_state:
                         self._fuel_strategy[key] = saved_state[key]
-                logger.info(f"Loaded fuel state: {self._fuel_strategy['current_fuel_gal']} gal, set={self._fuel_strategy['fuel_set']}")
+                # PIT-FUEL-1: Log tank capacity specifically to debug reversion issues
+                logger.info(f"PIT-FUEL-1: Loaded fuel state - tank_capacity={self._fuel_strategy['tank_capacity_gal']} gal, "
+                           f"current={self._fuel_strategy['current_fuel_gal']} gal, set={self._fuel_strategy['fuel_set']}")
+            else:
+                # PIT-FUEL-1: Explicitly log when using defaults (helps debug reversion)
+                logger.warning(f"PIT-FUEL-1: Fuel state file not found: {fuel_file} - using defaults "
+                              f"(tank_capacity={DEFAULT_TANK_CAPACITY_GAL} gal)")
         except Exception as e:
-            logger.warning(f"Could not load fuel state: {e}")
+            logger.error(f"PIT-FUEL-1: Failed to load fuel state from {fuel_file}: {e} - using defaults")
 
     def _save_fuel_state(self) -> bool:
-        """Save fuel state to disk. Returns True on success."""
+        """Save fuel state to disk. Returns True on success.
+
+        PIT-FUEL-1: Enhanced logging to debug persistence issues.
+        """
+        fuel_file = self._get_fuel_state_path()
         try:
-            fuel_file = self._get_fuel_state_path()
             config_dir = os.path.dirname(fuel_file)
             os.makedirs(config_dir, exist_ok=True)
             with open(fuel_file, 'w') as f:
                 json.dump(self._fuel_strategy, f, indent=2)
-            logger.info(f"Saved fuel state: {self._fuel_strategy['current_fuel_gal']} gal")
+            # PIT-FUEL-1: Log tank capacity specifically to verify persistence
+            logger.info(f"PIT-FUEL-1: Saved fuel state to {fuel_file} - tank_capacity={self._fuel_strategy['tank_capacity_gal']} gal, "
+                       f"current={self._fuel_strategy['current_fuel_gal']} gal")
             return True
         except Exception as e:
-            logger.error(f"Failed to save fuel state: {e}")
+            logger.error(f"PIT-FUEL-1: Failed to save fuel state to {fuel_file}: {e}")
             return False
 
     # ============ Trip State Persistence (PIT-1R) ============
@@ -6913,6 +7475,18 @@ class PitCrewDashboard:
             logger.error(f"Failed to save tire state: {e}")
             return False
 
+    # ============ Camera Slot Normalization (CAM-CONTRACT-0) ============
+
+    def _normalize_camera_slot(self, slot_id: str) -> str:
+        """CAM-CONTRACT-1B: Normalize camera slot to canonical name.
+
+        Accepts both canonical (main, cockpit, chase, suspension) and
+        legacy names (pov, roof, front, rear) for backward compatibility.
+        """
+        if slot_id in {'main', 'cockpit', 'chase', 'suspension'}:
+            return slot_id
+        return self._camera_aliases.get(slot_id, slot_id)
+
     # ============ Desired Camera Persistence (PROD-3) ============
 
     def _get_desired_camera_path(self) -> str:
@@ -6928,7 +7502,11 @@ class PitCrewDashboard:
                 with open(cam_file, 'r') as f:
                     saved = json.load(f)
                 camera = saved.get('desired_camera')
-                if camera in ('chase', 'pov', 'roof', 'front'):
+                # CAM-CONTRACT-1B: Accept both canonical and legacy names
+                valid_cameras = {'main', 'cockpit', 'chase', 'suspension', 'pov', 'roof', 'front', 'rear'}
+                if camera in valid_cameras:
+                    # Normalize legacy names to canonical
+                    camera = self._normalize_camera_slot(camera)
                     self._streaming_state['camera'] = camera
                     logger.info(f"Restored desired camera from disk: {camera}")
         except Exception as e:
@@ -6950,6 +7528,51 @@ class PitCrewDashboard:
             logger.error(f"Failed to save desired camera state: {e}")
             return False
 
+    # ============ Program State Persistence (EDGE-PROG-3) ============
+
+    def _get_program_state_path(self) -> str:
+        """Get the path to the program state file."""
+        # Use /opt/argus/state/ for consistency with stream_status.json
+        return '/opt/argus/state/program_state.json'
+
+    def _load_program_state(self) -> None:
+        """Load persisted program state from disk (reboot recovery)."""
+        try:
+            state_file = self._get_program_state_path()
+            if os.path.exists(state_file):
+                with open(state_file, 'r') as f:
+                    saved = json.load(f)
+                # Merge saved state, but streaming is always False on startup
+                for key in ['active_camera', 'stream_destination', 'last_switch_at',
+                            'last_stream_start_at', 'last_error', 'updated_at']:
+                    if key in saved and saved[key] is not None:
+                        self._program_state[key] = saved[key]
+                # Always start with streaming=False (FFmpeg not running yet)
+                self._program_state['streaming'] = False
+                logger.info(f"Loaded program state: camera={self._program_state['active_camera']}")
+        except Exception as e:
+            logger.warning(f"Could not load program state: {e}")
+
+    def _save_program_state(self) -> bool:
+        """Save program state to disk. Returns True on success."""
+        try:
+            state_file = self._get_program_state_path()
+            os.makedirs(os.path.dirname(state_file), exist_ok=True)
+            self._program_state['updated_at'] = int(time.time() * 1000)
+            with open(state_file, 'w') as f:
+                json.dump(self._program_state, f, indent=2)
+            return True
+        except Exception as e:
+            logger.error(f"Failed to save program state: {e}")
+            return False
+
+    def _update_program_state(self, **kwargs) -> None:
+        """Update program state fields and persist to disk."""
+        for key, value in kwargs.items():
+            if key in self._program_state:
+                self._program_state[key] = value
+        self._save_program_state()
+
     def _load_camera_mappings(self) -> None:
         """Load persisted camera device mappings from disk."""
         try:
@@ -6957,9 +7580,15 @@ class PitCrewDashboard:
             if os.path.exists(config_path):
                 with open(config_path, 'r') as f:
                     saved = json.load(f)
-                for role in ('chase', 'pov', 'roof', 'front'):
+                # CAM-CONTRACT-1B: Load canonical camera slots
+                legacy_to_canonical = {'pov': 'cockpit', 'roof': 'chase', 'front': 'suspension', 'rear': 'suspension'}
+                for role in ('main', 'cockpit', 'chase', 'suspension'):
                     if role in saved:
                         self._camera_devices[role] = saved[role]
+                # Migrate legacy names if present in saved config
+                for legacy, canonical in legacy_to_canonical.items():
+                    if legacy in saved and canonical not in saved:
+                        self._camera_devices[canonical] = saved[legacy]
                 logger.info(f"Loaded camera mappings from disk")
         except Exception as e:
             logger.warning(f"Could not load camera mappings: {e}")
@@ -7056,21 +7685,118 @@ class PitCrewDashboard:
             logger.error(f"Failed to save pit notes: {e}")
             return False
 
+    # ============ PIT-COMMS-1: Background Pit Notes Sync ============
+
+    async def _pit_notes_sync_loop(self) -> None:
+        """Background task to sync unsynced pit notes to cloud.
+
+        PIT-COMMS-1: Retries syncing notes every 30 seconds when cloud is connected.
+        This ensures notes sent while offline get delivered when connectivity returns.
+
+        LINK-2: Guards against missing event_id — notes stay queued until
+        event_id becomes available (via heartbeat auto-discovery or settings).
+        """
+        logger.info("PIT-COMMS-1: Starting pit notes background sync loop")
+        _event_id_warned = False
+        while True:
+            try:
+                await asyncio.sleep(30)  # Check every 30 seconds
+
+                # Only attempt sync if cloud is configured and connected
+                if not (self.telemetry.cloud_connected and self.config.cloud_url and self.config.truck_token):
+                    continue
+
+                # LINK-2: Guard against missing event_id — cannot construct URL without it
+                if not self.config.event_id:
+                    if not _event_id_warned:
+                        logger.warning("LINK-2: Cannot sync pit notes — no event_id yet (waiting for heartbeat auto-discovery)")
+                        _event_id_warned = True
+                    continue
+                _event_id_warned = False
+
+                # Find unsynced notes
+                unsynced = [n for n in self._pit_notes if not n.get('synced', False)]
+                if not unsynced:
+                    continue
+
+                logger.info(f"PIT-COMMS-1: Attempting to sync {len(unsynced)} unsynced notes")
+                self._pit_notes_last_sync_attempt = int(time.time() * 1000)
+
+                synced_count = 0
+                async with httpx.AsyncClient() as client:
+                    for note in unsynced:
+                        try:
+                            response = await client.post(
+                                f"{self.config.cloud_url}/api/v1/events/{self.config.event_id}/pit-notes",
+                                json={
+                                    'vehicle_id': self.config.vehicle_id,
+                                    'note': note.get('text', ''),
+                                    'timestamp_ms': note.get('timestamp', int(time.time() * 1000))
+                                },
+                                headers={'X-Truck-Token': self.config.truck_token},
+                                timeout=10.0
+                            )
+                            if response.status_code in (200, 201):
+                                note['synced'] = True
+                                synced_count += 1
+                            else:
+                                logger.warning(f"PIT-COMMS-1: Cloud rejected note: {response.status_code}")
+                        except Exception as e:
+                            logger.warning(f"PIT-COMMS-1: Failed to sync note: {e}")
+                            break  # Stop on first failure, retry next cycle
+
+                if synced_count > 0:
+                    self._save_pit_notes()
+                    logger.info(f"PIT-COMMS-1: Synced {synced_count} notes to cloud")
+
+            except asyncio.CancelledError:
+                logger.info("PIT-COMMS-1: Pit notes sync loop cancelled")
+                break
+            except Exception as e:
+                logger.error(f"PIT-COMMS-1: Error in pit notes sync loop: {e}")
+                await asyncio.sleep(30)  # Wait before retrying on error
+
+    def get_pit_notes_sync_status(self) -> dict:
+        """Get current pit notes sync status for UI display.
+
+        PIT-COMMS-1: Returns sync statistics for the Comms tab.
+        LINK-2: Added event_id and waiting_for_event fields.
+        """
+        unsynced = len([n for n in self._pit_notes if not n.get('synced', False)])
+        synced = len([n for n in self._pit_notes if n.get('synced', False)])
+        has_event_id = bool(self.config.event_id)
+        return {
+            'total': len(self._pit_notes),
+            'synced': synced,
+            'queued': unsynced,
+            'cloud_connected': self.telemetry.cloud_connected,
+            'cloud_configured': bool(self.config.cloud_url and self.config.truck_token),
+            'event_id': self.config.event_id or None,
+            'waiting_for_event': not has_event_id and bool(self.config.cloud_url and self.config.truck_token),
+            'last_sync_attempt': self._pit_notes_last_sync_attempt,
+        }
+
     # ============ Streaming Management ============
 
     def _get_camera_device(self, camera_name: str) -> Optional[str]:
-        """Get the video device path for a camera name."""
-        device = self._camera_devices.get(camera_name)
+        """Get the video device path for a camera name.
+
+        PIT-CAM-PREVIEW-B: Uses canonical names for fallback probing.
+        Accepts both canonical (main/cockpit/chase/suspension) and
+        legacy (pov/roof/front) names via _normalize_camera_slot.
+        """
+        canonical = self._normalize_camera_slot(camera_name)
+        device = self._camera_devices.get(canonical)
         if device and os.path.exists(device):
             return device
-        # Try alternate even-numbered devices
+        # Probe alternate device nodes (USB cameras enumerate unpredictably)
         alt_devices = {
-            "chase": ["/dev/video0", "/dev/video1"],
-            "pov": ["/dev/video2", "/dev/video3"],
-            "roof": ["/dev/video4", "/dev/video5"],
-            "front": ["/dev/video6", "/dev/video7"],
+            "main": ["/dev/video0", "/dev/video1"],
+            "cockpit": ["/dev/video2", "/dev/video3"],
+            "chase": ["/dev/video4", "/dev/video5"],
+            "suspension": ["/dev/video6", "/dev/video7"],
         }
-        for alt in alt_devices.get(camera_name, []):
+        for alt in alt_devices.get(canonical, []):
             if os.path.exists(alt):
                 return alt
         return None
@@ -7558,6 +8284,8 @@ class PitCrewDashboard:
         app = web.Application()
 
         # Routes
+        # EDGE-SETUP-1: Health endpoint for install script health check (no auth required)
+        app.router.add_get('/health', self.handle_health)
         app.router.add_get('/', self.handle_index)
         app.router.add_get('/setup', self.handle_setup_page)
         app.router.add_post('/setup', self.handle_setup)
@@ -7575,6 +8303,7 @@ class PitCrewDashboard:
         app.router.add_get('/api/audio/level', self.handle_audio_level)
         app.router.add_post('/api/pit-note', self.handle_pit_note)
         app.router.add_get('/api/pit-notes', self.handle_get_pit_notes)
+        app.router.add_get('/api/pit-notes/sync-status', self.handle_pit_notes_sync_status)  # PIT-COMMS-1
 
         # P1: Fuel and tire strategy endpoints
         app.router.add_get('/api/fuel/status', self.handle_fuel_status)
@@ -7596,11 +8325,19 @@ class PitCrewDashboard:
         app.router.add_get('/api/cameras/screenshots/status', self.handle_screenshots_status)
         app.router.add_post('/api/cameras/screenshot/{camera}/capture', self.handle_capture_screenshot)
 
+        # PIT-CAM-PREVIEW-B: Stable preview endpoints (canonical names)
+        app.router.add_get('/api/cameras/preview/{camera}.jpg', self.handle_camera_screenshot)
+        app.router.add_post('/api/cameras/preview/{camera}/capture', self.handle_capture_screenshot)
+
         # ADDED: Streaming control endpoints
         app.router.add_get('/api/streaming/status', self.handle_streaming_status)
         app.router.add_post('/api/streaming/start', self.handle_streaming_start)
         app.router.add_post('/api/streaming/stop', self.handle_streaming_stop)
         app.router.add_post('/api/streaming/switch-camera', self.handle_streaming_switch_camera)
+
+        # EDGE-PROG-3: Program State endpoints (authoritative source of truth)
+        app.router.add_get('/api/program/status', self.handle_program_status)
+        app.router.add_post('/api/program/switch', self.handle_program_switch)
 
         # STREAM-1: Stream profile endpoints
         app.router.add_get('/api/stream/profile', self.handle_get_stream_profile)
@@ -7632,6 +8369,18 @@ class PitCrewDashboard:
         token = self._get_session(request)
         return self.sessions.validate_session(token) if token else False
 
+    async def handle_health(self, request: web.Request) -> web.Response:
+        """EDGE-SETUP-1: Health check endpoint for install script (no auth required).
+
+        Returns 200 OK with basic status info.
+        Used by install.sh to verify dashboard is running.
+        """
+        return web.json_response({
+            'status': 'ok',
+            'configured': self.config.is_configured,
+            'vehicle_number': self.config.vehicle_number if self.config.is_configured else None,
+        })
+
     async def handle_index(self, request: web.Request) -> web.Response:
         """Serve the dashboard, or redirect to setup/login."""
         # If not configured, redirect to setup wizard
@@ -7642,12 +8391,31 @@ class PitCrewDashboard:
         if not self._is_authenticated(request):
             raise web.HTTPFound('/login')
 
+        # EDGE-CLOUD-2: Generate CSP nonce for this request
+        nonce = secrets.token_urlsafe(16)
+
         # Inject vehicle number into page
         html = DASHBOARD_HTML.replace(
             "window.VEHICLE_NUMBER || '---'",
             f"'{self.config.vehicle_number}'"
         )
-        return web.Response(text=html, content_type='text/html')
+        # Inject nonce into all script tags
+        html = html.replace('__CSP_NONCE__', nonce)
+
+        # EDGE-CLOUD-2: Set Content-Security-Policy header
+        csp = (
+            f"default-src 'self'; "
+            f"script-src 'nonce-{nonce}' https://cdn.jsdelivr.net https://unpkg.com; "
+            f"style-src 'self' 'unsafe-inline' https://unpkg.com; "
+            f"img-src 'self' data:; "
+            f"connect-src 'self'; "
+            f"font-src 'self'; "
+            f"frame-src 'none'; "
+            f"object-src 'none'"
+        )
+        response = web.Response(text=html, content_type='text/html')
+        response.headers['Content-Security-Policy'] = csp
+        return response
 
     async def handle_setup_page(self, request: web.Request) -> web.Response:
         """Serve the setup wizard page."""
@@ -7687,7 +8455,11 @@ class PitCrewDashboard:
         # Save configuration
         self.config.set_password(password)
         self.config.vehicle_number = data.get('vehicle_number', '').strip() or '000'
-        self.config.cloud_url = data.get('cloud_url', '').strip()
+        # EDGE-CLOUD-1: Validate cloud_url — add http:// if no scheme present
+        cloud_url = data.get('cloud_url', '').strip()
+        if cloud_url and not cloud_url.startswith(('http://', 'https://')):
+            cloud_url = f"http://{cloud_url}"
+        self.config.cloud_url = cloud_url.rstrip('/')
         self.config.truck_token = data.get('truck_token', '').strip()
         self.config.event_id = data.get('event_id', '').strip()
         self.config.youtube_stream_key = data.get('youtube_stream_key', '').strip()
@@ -7696,6 +8468,8 @@ class PitCrewDashboard:
         try:
             self.config.save()
             logger.info("Setup completed successfully")
+            # LINK-1: Restart cloud status loop to pick up new cloud_url/truck_token
+            self._restart_cloud_status_loop()
         except Exception as e:
             logger.error(f"Failed to save config: {e}")
             html = SETUP_HTML.replace(
@@ -7772,7 +8546,11 @@ class PitCrewDashboard:
 
         # Update configuration
         self.config.vehicle_number = data.get('vehicle_number', '').strip() or '000'
-        self.config.cloud_url = data.get('cloud_url', '').strip()
+        # EDGE-CLOUD-1: Validate cloud_url — add http:// if no scheme present
+        cloud_url = data.get('cloud_url', '').strip()
+        if cloud_url and not cloud_url.startswith(('http://', 'https://')):
+            cloud_url = f"http://{cloud_url}"
+        self.config.cloud_url = cloud_url.rstrip('/')
         self.config.truck_token = data.get('truck_token', '').strip()
         self.config.event_id = data.get('event_id', '').strip()
         self.config.youtube_stream_key = data.get('youtube_stream_key', '').strip()
@@ -7781,6 +8559,8 @@ class PitCrewDashboard:
         try:
             self.config.save()
             logger.info("Settings updated successfully")
+            # LINK-1: Restart cloud status loop to pick up new cloud_url/truck_token
+            self._restart_cloud_status_loop()
             message = '<div class="success">Settings saved successfully!</div>'
         except Exception as e:
             logger.error(f"Failed to save settings: {e}")
@@ -8183,6 +8963,127 @@ class PitCrewDashboard:
         status_code = 200 if result.get('success') else 400
         return web.json_response(result, status=status_code)
 
+    # ============ EDGE-PROG-3: Program State API Handlers ============
+
+    async def handle_program_status(self, request: web.Request) -> web.Response:
+        """GET /api/program/status — single authoritative program state.
+
+        EDGE-PROG-3: Returns the unified program state that both Pit Crew UI
+        and Cloud camera switching should use as source of truth.
+        """
+        if not self._is_authenticated(request):
+            return web.Response(status=401, text='Unauthorized')
+
+        # Sync streaming state from FFmpeg process check
+        if self._ffmpeg_process:
+            poll_result = self._ffmpeg_process.poll()
+            if poll_result is not None:
+                # FFmpeg exited - update program state
+                self._update_program_state(
+                    streaming=False,
+                    last_error=f"FFmpeg exited with code {poll_result}" if poll_result != 0 else None
+                )
+                self._ffmpeg_process = None
+            else:
+                # FFmpeg still running
+                if not self._program_state['streaming']:
+                    self._update_program_state(streaming=True)
+        else:
+            if self._program_state['streaming']:
+                self._update_program_state(streaming=False)
+
+        # Read supervisor status for additional context
+        supervisor_state = None
+        stream_status_file = '/opt/argus/state/stream_status.json'
+        try:
+            if os.path.exists(stream_status_file):
+                with open(stream_status_file, 'r') as f:
+                    supervisor = json.load(f)
+                if time.time() - supervisor.get('updated_at', 0) < 30:
+                    supervisor_state = supervisor.get('state', 'unknown')
+        except (json.JSONDecodeError, OSError):
+            pass
+
+        response = {
+            **self._program_state,
+            'supervisor_state': supervisor_state,
+            'youtube_configured': bool(self.config.youtube_stream_key),
+            'youtube_url': self.config.youtube_live_url or None,
+            'stream_profile': self._stream_profile,
+        }
+        return web.json_response(response)
+
+    async def handle_program_switch(self, request: web.Request) -> web.Response:
+        """POST /api/program/switch — switch active camera in program feed.
+
+        EDGE-PROG-3: This is the authoritative camera switch endpoint.
+        Updates program state only AFTER the streaming pipeline truly switches.
+        """
+        if not self._is_authenticated(request):
+            return web.Response(status=401, text='Unauthorized')
+
+        try:
+            data = await request.json()
+            camera = data.get('camera')
+            if not camera:
+                return web.json_response({'error': 'camera field required'}, status=400)
+            # CAM-CONTRACT-1B: Accept both canonical and legacy camera names
+            all_valid = {'main', 'cockpit', 'chase', 'suspension', 'pov', 'roof', 'front', 'rear'}
+            if camera not in all_valid:
+                return web.json_response({'error': f'Invalid camera: {camera}. Valid: main, cockpit, chase, suspension'}, status=400)
+            camera = self._normalize_camera_slot(camera)
+        except Exception:
+            return web.json_response({'error': 'Invalid JSON'}, status=400)
+
+        # Check if already on this camera
+        if camera == self._program_state['active_camera'] and self._program_state['streaming']:
+            return web.json_response({
+                'success': True,
+                'message': 'Already on this camera',
+                'program_state': self._program_state,
+            })
+
+        # Rate limit camera switches
+        now = time.time()
+        if now - self._last_camera_switch_at < self._camera_switch_cooldown_s:
+            return web.json_response({
+                'success': False,
+                'error': 'Camera switch rate limited. Please wait.',
+            }, status=429)
+        self._last_camera_switch_at = now
+
+        # Perform the actual switch
+        result = await self.switch_camera(camera)
+
+        if result.get('success'):
+            # Update program state AFTER successful switch
+            switch_time = int(time.time() * 1000)
+            self._update_program_state(
+                active_camera=camera,
+                streaming=True,
+                last_switch_at=switch_time,
+                last_stream_start_at=switch_time,
+                last_error=None,
+            )
+            # Also persist desired camera for reboot recovery
+            self._save_desired_camera(camera)
+
+            return web.json_response({
+                'success': True,
+                'message': f'Switched to {camera}',
+                'program_state': self._program_state,
+            })
+        else:
+            # Update program state with error
+            self._update_program_state(
+                last_error=result.get('error', 'Switch failed'),
+            )
+            return web.json_response({
+                'success': False,
+                'error': result.get('error', 'Switch failed'),
+                'program_state': self._program_state,
+            }, status=400)
+
     # ============ STREAM-1: Stream Profile API Handlers ============
 
     async def handle_get_stream_profile(self, request: web.Request) -> web.Response:
@@ -8291,7 +9192,9 @@ class PitCrewDashboard:
             self._save_pit_notes()
 
             # Try to sync to cloud if connected
-            if self.telemetry.cloud_connected and self.config.cloud_url and self.config.truck_token:
+            # LINK-2: Also require event_id — without it the URL is malformed
+            if (self.telemetry.cloud_connected and self.config.cloud_url
+                    and self.config.truck_token and self.config.event_id):
                 try:
                     async with httpx.AsyncClient() as client:
                         response = await client.post(
@@ -8313,6 +9216,8 @@ class PitCrewDashboard:
                             logger.info(f"Pit note synced to cloud: {note_text[:50]}")
                 except Exception as e:
                     logger.warning(f"Failed to sync pit note to cloud: {e}")
+            elif not self.config.event_id:
+                logger.debug("LINK-2: Note saved locally — no event_id yet, background sync will retry")
 
             return web.json_response({
                 'success': True,
@@ -8343,6 +9248,20 @@ class PitCrewDashboard:
             logger.error(f"Error getting pit notes: {e}")
             return web.json_response({'error': str(e)}, status=500)
 
+    async def handle_pit_notes_sync_status(self, request: web.Request) -> web.Response:
+        """Return pit notes sync status for UI display.
+
+        PIT-COMMS-1: Shows cloud connection status and queue counts.
+        """
+        if not self._is_authenticated(request):
+            return web.Response(status=401, text='Unauthorized')
+
+        try:
+            return web.json_response(self.get_pit_notes_sync_status())
+        except Exception as e:
+            logger.error(f"Error getting pit notes sync status: {e}")
+            return web.json_response({'error': str(e)}, status=500)
+
     async def handle_fuel_status(self, request: web.Request) -> web.Response:
         """Return current fuel strategy status."""
         if not self._is_authenticated(request):
@@ -8350,8 +9269,9 @@ class PitCrewDashboard:
 
         fuel_set = self._fuel_strategy.get('fuel_set', False)
         current_fuel = self._fuel_strategy.get('current_fuel_gal')
-        tank_capacity = self._fuel_strategy.get('tank_capacity_gal', 35.0)
-        consumption_rate = self._fuel_strategy.get('consumption_rate_mpg', 6.0)
+        # PIT-FUEL-1: Use constant for fallback (single source of truth)
+        tank_capacity = self._fuel_strategy.get('tank_capacity_gal', DEFAULT_TANK_CAPACITY_GAL)
+        consumption_rate = self._fuel_strategy.get('consumption_rate_mpg', 2.0)
 
         # Calculate estimated miles remaining (only if fuel is set)
         estimated_miles = None
@@ -8360,12 +9280,13 @@ class PitCrewDashboard:
             estimated_miles = round(current_fuel * consumption_rate, 1)
             fuel_percent = round((current_fuel / tank_capacity) * 100, 1) if tank_capacity > 0 else 0
 
-        # PIT-1R: Trip miles and range
+        # PIT-FUEL-2: Trip miles and range (remaining_range subtracts miles traveled)
         trip_miles = round(self._trip_state.get('trip_miles', 0.0), 1)
         trip_start_at = self._trip_state.get('trip_start_at', 0)
         range_miles_remaining = None
         if fuel_set and current_fuel is not None and consumption_rate > 0:
-            range_miles_remaining = round(current_fuel * consumption_rate, 1)
+            estimated_range = current_fuel * consumption_rate
+            range_miles_remaining = round(max(0, estimated_range - trip_miles), 1)
 
         return web.json_response({
             'fuel_set': fuel_set,
@@ -8401,15 +9322,17 @@ class PitCrewDashboard:
         try:
             data = await request.json()
             now_ms = int(time.time() * 1000)
-            tank_capacity = self._fuel_strategy.get('tank_capacity_gal', 35.0)
+            # PIT-FUEL-1: Use constant for fallback (single source of truth)
+            tank_capacity = self._fuel_strategy.get('tank_capacity_gal', DEFAULT_TANK_CAPACITY_GAL)
 
             # Update tank capacity (must be positive)
+            # PIT-FUEL-1: Validate against constants (1-250, never clamp to 35)
             if 'tank_capacity_gal' in data:
                 new_capacity = float(data['tank_capacity_gal'])
                 if new_capacity <= 0:
                     return web.json_response({'error': 'Tank capacity must be positive'}, status=400)
-                if new_capacity < 5 or new_capacity > 250:  # PIT-1R: Allow up to 250 gal for large tanks
-                    return web.json_response({'error': 'Tank capacity must be between 5 and 250 gallons'}, status=400)
+                if new_capacity < MIN_TANK_CAPACITY_GAL or new_capacity > MAX_TANK_CAPACITY_GAL:
+                    return web.json_response({'error': f'Tank capacity must be between {int(MIN_TANK_CAPACITY_GAL)} and {int(MAX_TANK_CAPACITY_GAL)} gallons'}, status=400)
                 self._fuel_strategy['tank_capacity_gal'] = new_capacity
                 tank_capacity = new_capacity
 
@@ -8427,8 +9350,8 @@ class PitCrewDashboard:
             # Update consumption rate (optional)
             if 'consumption_rate_mpg' in data:
                 new_rate = float(data['consumption_rate_mpg'])
-                if new_rate < 0.5 or new_rate > 10.0:
-                    return web.json_response({'error': 'MPG must be between 0.5 and 10.0'}, status=400)
+                if new_rate < 0.1 or new_rate > 30:
+                    return web.json_response({'error': 'MPG must be between 0.1 and 30'}, status=400)
                 self._fuel_strategy['consumption_rate_mpg'] = new_rate
 
             # Handle "tank filled" shortcut
@@ -8600,9 +9523,17 @@ class PitCrewDashboard:
                     port_info['description'] = os.path.basename(dev)
                 result['serial_ports'].append(port_info)
 
-            # Check GPS status
+            # Check GPS status — detect common GPS serial adapters
+            # Supports: u-blox, Prolific ATEN Serial Bridge, generic ttyUSB/ttyACM
             gps_device = None
-            for dev in ['/dev/ttyUSB0', '/dev/ttyACM0', '/dev/serial/by-id/*gps*', '/dev/serial/by-id/*u-blox*']:
+            for dev in [
+                '/dev/serial/by-id/*gps*',
+                '/dev/serial/by-id/*u-blox*',
+                '/dev/serial/by-id/*Prolific*',
+                '/dev/serial/by-id/*ATEN*',
+                '/dev/ttyUSB0',
+                '/dev/ttyACM0',
+            ]:
                 import glob as glob_module
                 matches = glob_module.glob(dev)
                 if matches:
@@ -8618,16 +9549,21 @@ class PitCrewDashboard:
                     'status': 'online' if self.telemetry.satellites > 0 else 'waiting'
                 }
 
-            # Check ANT+ USB stick
+            # Check ANT+ USB stick (Dynastream vendor ID 0fcf)
+            # Common products: ANTUSB2 (0fcf:1008), ANTUSB-m (0fcf:1009)
             try:
                 proc = subprocess.run(
                     ['lsusb', '-d', '0fcf:'],  # Dynastream (ANT+) vendor ID
                     capture_output=True, timeout=5.0, text=True
                 )
                 if proc.stdout.strip():
+                    lsusb_line = proc.stdout.strip().split('\n')[0]
+                    # Parse product name from lsusb output (after "ID xxxx:xxxx")
+                    parts = lsusb_line.split('ID ')
+                    ant_product = parts[1].split(' ', 1)[1].strip() if len(parts) > 1 and ' ' in parts[1] else 'ANT+ USB Stick'
                     result['ant'] = {
-                        'device': proc.stdout.strip().split()[-1] if proc.stdout else 'USB ANT+',
-                        'product': 'ANT+ USB Stick',
+                        'device': lsusb_line,
+                        'product': ant_product,
                         'status': 'online',
                         'service_status': 'unknown',
                         'heart_rate': self.telemetry.heart_rate
@@ -8666,30 +9602,224 @@ class PitCrewDashboard:
             except Exception:
                 pass
 
-            # Check service statuses
-            # EDGE-3: Include argus-can-setup, and report failed vs inactive distinctly
-            services = ['argus-gps', 'argus-can-setup', 'argus-can', 'argus-ant', 'argus-uplink', 'argus-video']
-            for svc in services:
+            # PIT-SVC-2: Unified service status model
+            # Returns per-service: {state, label, details}
+            #   state: OK | WARN | ERROR | OFF | UNKNOWN
+            #   label: human-readable status
+            #   details: optional hint
+            # Combines systemd state + device presence + config to give
+            # actionable information instead of raw systemd strings.
+            svc_names = ['argus-gps', 'argus-can-setup', 'argus-can', 'argus-ant', 'argus-uplink', 'argus-video']
+            systemd_states = {}
+            for svc in svc_names:
                 try:
                     proc = subprocess.run(
                         ['systemctl', 'is-active', svc],
                         capture_output=True, timeout=2.0, text=True
                     )
-                    svc_status = proc.stdout.strip()
-                    # EDGE-3: Also check if service hit start limit (crashed too many times)
-                    if svc_status == 'failed':
-                        proc2 = subprocess.run(
-                            ['systemctl', 'show', svc, '--property=Result'],
-                            capture_output=True, timeout=2.0, text=True
-                        )
-                        result_str = proc2.stdout.strip()
-                        if 'start-limit-hit' in result_str:
-                            svc_status = 'crashed (rate-limited)'
-                        else:
-                            svc_status = 'crashed'
-                    result['services'][svc.replace('argus-', '')] = svc_status
+                    systemd_states[svc] = proc.stdout.strip()
                 except Exception:
-                    result['services'][svc.replace('argus-', '')] = 'unknown'
+                    systemd_states[svc] = 'unknown'
+
+            # Helper: check if systemd service failed due to rate limiting
+            def _is_rate_limited(svc):
+                try:
+                    p = subprocess.run(
+                        ['systemctl', 'show', svc, '--property=Result'],
+                        capture_output=True, timeout=2.0, text=True
+                    )
+                    return 'start-limit-hit' in p.stdout
+                except Exception:
+                    return False
+
+            # --- argus-gps ---
+            gps_sd = systemd_states.get('argus-gps', 'unknown')
+            if gps_sd == 'active':
+                if self.telemetry.satellites and self.telemetry.satellites > 0:
+                    result['services']['gps'] = {
+                        'state': 'OK', 'label': 'Running',
+                        'details': f'{self.telemetry.satellites} satellites'
+                    }
+                else:
+                    result['services']['gps'] = {
+                        'state': 'WARN', 'label': 'No fix yet',
+                        'details': 'Waiting for satellite lock'
+                    }
+            elif gps_sd == 'inactive':
+                if result.get('gps') or any(
+                    os.path.exists(f'/dev/ttyUSB{i}') or os.path.exists(f'/dev/ttyACM{i}')
+                    for i in range(4)
+                ):
+                    result['services']['gps'] = {
+                        'state': 'WARN', 'label': 'Waiting for device',
+                        'details': 'GPS dongle detected but service not started'
+                    }
+                else:
+                    result['services']['gps'] = {
+                        'state': 'OFF', 'label': 'No GPS dongle',
+                        'details': 'Plug in a USB GPS receiver'
+                    }
+            elif gps_sd == 'failed':
+                detail = 'Restart limit hit' if _is_rate_limited('argus-gps') else 'Service crashed'
+                result['services']['gps'] = {
+                    'state': 'ERROR', 'label': 'Error',
+                    'details': detail
+                }
+            else:
+                result['services']['gps'] = {
+                    'state': 'UNKNOWN', 'label': gps_sd, 'details': ''
+                }
+
+            # --- argus-can-setup ---
+            can_setup_sd = systemd_states.get('argus-can-setup', 'unknown')
+            if can_setup_sd == 'active':
+                result['services']['can-setup'] = {
+                    'state': 'OK', 'label': 'Running', 'details': ''
+                }
+            elif can_setup_sd == 'inactive':
+                result['services']['can-setup'] = {
+                    'state': 'OFF', 'label': 'Not needed',
+                    'details': 'No CAN interface to configure'
+                }
+            elif can_setup_sd == 'failed':
+                result['services']['can-setup'] = {
+                    'state': 'ERROR', 'label': 'Error',
+                    'details': 'CAN setup failed'
+                }
+            else:
+                result['services']['can-setup'] = {
+                    'state': 'UNKNOWN', 'label': can_setup_sd, 'details': ''
+                }
+
+            # --- argus-can ---
+            can_sd = systemd_states.get('argus-can', 'unknown')
+            if can_sd == 'active':
+                result['services']['can'] = {
+                    'state': 'OK', 'label': 'Running', 'details': ''
+                }
+            elif can_sd == 'inactive':
+                if result.get('can'):
+                    result['services']['can'] = {
+                        'state': 'WARN', 'label': 'Waiting for device',
+                        'details': 'CAN interface detected but service not started'
+                    }
+                else:
+                    result['services']['can'] = {
+                        'state': 'OFF', 'label': 'No CAN interface',
+                        'details': 'Connect a CAN bus adapter'
+                    }
+            elif can_sd == 'failed':
+                detail = 'Restart limit hit' if _is_rate_limited('argus-can') else 'Service crashed'
+                result['services']['can'] = {
+                    'state': 'ERROR', 'label': 'Error', 'details': detail
+                }
+            else:
+                result['services']['can'] = {
+                    'state': 'UNKNOWN', 'label': can_sd, 'details': ''
+                }
+
+            # --- argus-ant ---
+            ant_sd = systemd_states.get('argus-ant', 'unknown')
+            if ant_sd == 'active':
+                if self.telemetry.heart_rate and self.telemetry.heart_rate > 0:
+                    result['services']['ant'] = {
+                        'state': 'OK', 'label': 'Running',
+                        'details': f'HR: {self.telemetry.heart_rate} BPM'
+                    }
+                else:
+                    result['services']['ant'] = {
+                        'state': 'WARN', 'label': 'Connected, no data',
+                        'details': 'Waiting for heart rate signal'
+                    }
+            elif ant_sd == 'inactive':
+                if result.get('ant'):
+                    result['services']['ant'] = {
+                        'state': 'WARN', 'label': 'Waiting for device',
+                        'details': 'ANT+ stick detected but service not started'
+                    }
+                else:
+                    result['services']['ant'] = {
+                        'state': 'OFF', 'label': 'No ANT+ stick',
+                        'details': 'Plug in an ANT+ USB stick'
+                    }
+            elif ant_sd == 'failed':
+                detail = 'Restart limit hit' if _is_rate_limited('argus-ant') else 'Service crashed'
+                result['services']['ant'] = {
+                    'state': 'ERROR', 'label': 'Error', 'details': detail
+                }
+            else:
+                result['services']['ant'] = {
+                    'state': 'UNKNOWN', 'label': ant_sd, 'details': ''
+                }
+
+            # --- argus-uplink ---
+            uplink_sd = systemd_states.get('argus-uplink', 'unknown')
+            if uplink_sd == 'active':
+                # Check if uplink is idling (not_configured) via state file
+                uplink_state_detail = ''
+                try:
+                    sf = Path('/opt/argus/state/uplink_status.json')
+                    if sf.exists():
+                        us = json.loads(sf.read_text())
+                        uplink_state_detail = us.get('status', '')
+                except Exception:
+                    pass
+                if uplink_state_detail == 'not_configured':
+                    result['services']['uplink'] = {
+                        'state': 'WARN', 'label': 'Not configured',
+                        'details': 'Set Cloud URL and Token in Settings'
+                    }
+                elif uplink_state_detail == 'starting':
+                    result['services']['uplink'] = {
+                        'state': 'WARN', 'label': 'Starting',
+                        'details': 'Connecting to cloud'
+                    }
+                else:
+                    result['services']['uplink'] = {
+                        'state': 'OK', 'label': 'Running', 'details': ''
+                    }
+            elif uplink_sd == 'inactive':
+                result['services']['uplink'] = {
+                    'state': 'OFF', 'label': 'Not configured',
+                    'details': 'Set Cloud URL and Token in Settings'
+                }
+            elif uplink_sd == 'failed':
+                detail = 'Restart limit hit' if _is_rate_limited('argus-uplink') else 'Service crashed'
+                result['services']['uplink'] = {
+                    'state': 'ERROR', 'label': 'Error', 'details': detail
+                }
+            else:
+                result['services']['uplink'] = {
+                    'state': 'UNKNOWN', 'label': uplink_sd, 'details': ''
+                }
+
+            # --- argus-video ---
+            video_sd = systemd_states.get('argus-video', 'unknown')
+            if video_sd == 'active':
+                result['services']['video'] = {
+                    'state': 'OK', 'label': 'Ready',
+                    'details': 'Camera service running'
+                }
+            elif video_sd == 'inactive':
+                if result.get('cameras') and len(result['cameras']) > 0:
+                    result['services']['video'] = {
+                        'state': 'WARN', 'label': 'Waiting for device',
+                        'details': 'Cameras detected but service not started'
+                    }
+                else:
+                    result['services']['video'] = {
+                        'state': 'OFF', 'label': 'No cameras',
+                        'details': 'Connect USB cameras'
+                    }
+            elif video_sd == 'failed':
+                detail = 'Restart limit hit' if _is_rate_limited('argus-video') else 'Service crashed'
+                result['services']['video'] = {
+                    'state': 'ERROR', 'label': 'Error', 'details': detail
+                }
+            else:
+                result['services']['video'] = {
+                    'state': 'UNKNOWN', 'label': video_sd, 'details': ''
+                }
 
         except Exception as e:
             logger.error(f"Device scan error: {e}")
@@ -8703,10 +9833,18 @@ class PitCrewDashboard:
 
         try:
             data = await request.json()
-            for role in ['chase', 'pov', 'roof', 'front']:
+            # CAM-CONTRACT-1B: Accept canonical camera slot names
+            # Also accept legacy aliases for backward compatibility
+            legacy_to_canonical = {'pov': 'cockpit', 'roof': 'chase', 'front': 'suspension', 'rear': 'suspension'}
+            for role in ['main', 'cockpit', 'chase', 'suspension']:
                 if role in data:
                     self._camera_devices[role] = data[role]
                     logger.info(f"Camera mapping updated: {role} -> {data[role]}")
+            # Handle legacy names from old clients
+            for legacy, canonical in legacy_to_canonical.items():
+                if legacy in data and canonical not in data:
+                    self._camera_devices[canonical] = data[legacy]
+                    logger.info(f"Camera mapping updated (legacy {legacy}->{canonical}): {data[legacy]}")
 
             # Save to config file
             config_path = os.path.join(os.path.dirname(get_config_path()), 'camera_mappings.json')
@@ -8809,7 +9947,7 @@ class PitCrewDashboard:
         if not self._is_authenticated(request):
             return web.Response(status=401, text='Unauthorized')
 
-        camera = request.match_info.get('camera', '')
+        camera = self._normalize_camera_slot(request.match_info.get('camera', ''))
         if camera not in self._camera_devices:
             return web.Response(status=404, text='Camera not found')
 
@@ -8860,7 +9998,7 @@ class PitCrewDashboard:
                 'last_capture_ms': last_capture,
                 'age_ms': age_ms,
                 'resolution': self._screenshot_resolutions.get(camera, 'unknown'),
-                'screenshot_url': f'/api/cameras/screenshot/{camera}' if has_screenshot else None,
+                'screenshot_url': f'/api/cameras/preview/{camera}.jpg' if has_screenshot else None,
                 'is_stale': age_ms is not None and age_ms > (self._screenshot_interval * 2 * 1000)
             }
 
@@ -8876,7 +10014,7 @@ class PitCrewDashboard:
         if not self._is_authenticated(request):
             return web.Response(status=401, text='Unauthorized')
 
-        camera = request.match_info.get('camera', '')
+        camera = self._normalize_camera_slot(request.match_info.get('camera', ''))
         if camera not in self._camera_devices:
             return web.Response(status=404, text='Camera not found')
 
@@ -8895,51 +10033,52 @@ class PitCrewDashboard:
     async def _capture_single_screenshot(self, camera: str) -> tuple:
         """Capture a single screenshot from a camera using FFmpeg.
 
+        PIT-CAM-PREVIEW-B: Uses _get_camera_device for fallback probing
+        and asyncio subprocess to avoid blocking the event loop.
+
         Returns (success: bool, message: str)
         """
-        import subprocess
-        import tempfile
+        import re as _re
 
-        device_path = self._camera_devices.get(camera)
+        device_path = self._get_camera_device(camera)
         if not device_path:
-            return False, f"No device mapped for camera {camera}"
-
-        if not os.path.exists(device_path):
             self._camera_status[camera] = 'offline'
-            return False, f"Device {device_path} not found"
+            return False, f"No device found for camera {camera}"
+
+        # Skip if camera is currently streaming (don't compete for device)
+        if (self._ffmpeg_process and self._ffmpeg_process.poll() is None
+                and self._streaming_state.get('camera') == camera):
+            return False, f"Camera {camera} is busy (streaming)"
 
         output_path = os.path.join(self._screenshot_cache_dir, f'{camera}.jpg')
         temp_path = os.path.join(self._screenshot_cache_dir, f'{camera}_temp.jpg')
 
         try:
-            # Use FFmpeg to capture a single frame
-            # -f v4l2: V4L2 input format
-            # -video_size 640x480: Low resolution to save bandwidth/CPU
-            # -i device: Input device
-            # -vframes 1: Capture only 1 frame
-            # -q:v 5: JPEG quality (2-31, lower=better)
-            # -y: Overwrite output
+            # Try MJPEG first (faster for most USB cameras)
             cmd = [
                 'ffmpeg', '-y',
                 '-f', 'v4l2',
                 '-video_size', '640x480',
-                '-input_format', 'mjpeg',  # Prefer MJPEG if available (faster)
+                '-input_format', 'mjpeg',
                 '-i', device_path,
                 '-vframes', '1',
                 '-q:v', '5',
                 temp_path
             ]
 
-            # Run with timeout to prevent hanging
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                timeout=10.0,
-                text=True
+            proc = await asyncio.wait_for(
+                asyncio.create_subprocess_exec(
+                    *cmd,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                ),
+                timeout=12.0
             )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+            stderr_text = stderr.decode('utf-8', errors='replace') if stderr else ''
 
-            if result.returncode != 0:
-                # Try without mjpeg format (fallback for cameras that don't support it)
+            if proc.returncode != 0:
+                # Fallback without mjpeg format
                 cmd_fallback = [
                     'ffmpeg', '-y',
                     '-f', 'v4l2',
@@ -8949,25 +10088,27 @@ class PitCrewDashboard:
                     '-q:v', '5',
                     temp_path
                 ]
-                result = subprocess.run(
-                    cmd_fallback,
-                    capture_output=True,
-                    timeout=10.0,
-                    text=True
+                proc = await asyncio.wait_for(
+                    asyncio.create_subprocess_exec(
+                        *cmd_fallback,
+                        stdout=asyncio.subprocess.PIPE,
+                        stderr=asyncio.subprocess.PIPE,
+                    ),
+                    timeout=12.0
                 )
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=10.0)
+                stderr_text = stderr.decode('utf-8', errors='replace') if stderr else ''
 
-            if result.returncode == 0 and os.path.exists(temp_path):
+            if proc.returncode == 0 and os.path.exists(temp_path):
                 # Atomic rename to avoid serving partial files
                 os.rename(temp_path, output_path)
                 self._screenshot_timestamps[camera] = int(time.time() * 1000)
                 self._camera_status[camera] = 'online'
 
                 # Try to extract resolution from FFmpeg output
-                for line in result.stderr.split('\n'):
+                for line in stderr_text.split('\n'):
                     if 'Video:' in line and 'x' in line:
-                        # Parse resolution like "640x480"
-                        import re
-                        match = re.search(r'(\d{3,4}x\d{3,4})', line)
+                        match = _re.search(r'(\d{3,4}x\d{3,4})', line)
                         if match:
                             self._screenshot_resolutions[camera] = match.group(1)
                             break
@@ -8976,11 +10117,11 @@ class PitCrewDashboard:
                 return True, "Screenshot captured successfully"
             else:
                 self._camera_status[camera] = 'error'
-                error_msg = result.stderr[-500:] if result.stderr else "Unknown error"
+                error_msg = stderr_text[-500:] if stderr_text else "Unknown error"
                 logger.warning(f"FFmpeg capture failed for {camera}: {error_msg}")
                 return False, f"FFmpeg capture failed: {error_msg[:100]}"
 
-        except subprocess.TimeoutExpired:
+        except asyncio.TimeoutError:
             self._camera_status[camera] = 'timeout'
             logger.warning(f"Screenshot capture timeout for {camera}")
             return False, "Capture timed out"
@@ -9000,25 +10141,27 @@ class PitCrewDashboard:
                     pass
 
     async def _screenshot_capture_loop(self):
-        """Background task to capture screenshots periodically."""
-        logger.info(f"Starting screenshot capture loop (interval: {self._screenshot_interval}s)")
+        """Background task to capture preview thumbnails periodically.
+
+        PIT-CAM-PREVIEW-B: Uses _get_camera_device for fallback probing
+        so thumbnails work even when device nodes differ from defaults.
+        """
+        logger.info(f"Starting preview capture loop (interval: {self._screenshot_interval}s)")
 
         # Stagger initial captures to avoid CPU spike
-        initial_delay = 5
-        await asyncio.sleep(initial_delay)
+        await asyncio.sleep(5)
 
         while self._running:
             try:
                 self._screenshot_capture_in_progress = True
 
-                # Capture from each camera with a small delay between
-                for i, camera in enumerate(self._camera_devices.keys()):
+                for camera in list(self._camera_devices.keys()):
                     if not self._running:
                         break
 
-                    # Only capture if camera is potentially available
-                    device_path = self._camera_devices.get(camera, '')
-                    if device_path and os.path.exists(device_path):
+                    # Use _get_camera_device which probes fallback paths
+                    device_path = self._get_camera_device(camera)
+                    if device_path:
                         await self._capture_single_screenshot(camera)
                         # Stagger captures by 5 seconds to reduce CPU load
                         await asyncio.sleep(5)
@@ -9035,11 +10178,11 @@ class PitCrewDashboard:
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Screenshot capture loop error: {e}")
+                logger.error(f"Preview capture loop error: {e}")
                 self._screenshot_capture_in_progress = False
-                await asyncio.sleep(30)  # Wait before retrying on error
+                await asyncio.sleep(30)
 
-        logger.info("Screenshot capture loop stopped")
+        logger.info("Preview capture loop stopped")
 
     # ============ Course/GPX API Handlers (Feature 4) ============
 
@@ -9405,21 +10548,74 @@ class PitCrewDashboard:
             self.telemetry.last_update_ms = int(time.time() * 1000)
 
     async def _cloud_status_loop(self):
-        """Check cloud connection, get production status, and send heartbeats."""
-        if not HTTPX_AVAILABLE or not self.config.cloud_url:
+        """Check cloud connection, get production status, and send heartbeats.
+
+        LINK-1: This loop never permanently exits. When cloud_url or truck_token
+        is not configured, it idles (sleeps) and re-checks each iteration. This
+        allows settings changes via the web UI to take effect without restarting.
+
+        EDGE-CLOUD-1: Sets cloud_detail for granular banner display:
+        - "not_configured": no cloud_url or truck_token
+        - "healthy": cloud reachable AND event is in_progress
+        - "event_not_live": cloud reachable, token valid, but event not in_progress
+        - "unreachable": cloud /health endpoint not responding
+        - "auth_rejected": cloud reachable but truck token invalid (401)
+        """
+        if not HTTPX_AVAILABLE:
+            logger.warning("LINK-1: httpx not available; cloud status loop disabled")
             return
 
-        heartbeat_counter = 0  # Send heartbeat every 2nd iteration (10 seconds)
+        logger.info("LINK-1: Cloud status loop started")
+
+        poll_interval = self.config.leaderboard_poll_seconds
+        heartbeat_interval = 10  # seconds
+        last_heartbeat = 0.0
 
         async with httpx.AsyncClient() as client:
             while self._running:
                 try:
+                    # LINK-1: Re-check config every iteration instead of exiting
+                    if not self.config.cloud_url or not self.config.truck_token:
+                        self.telemetry.cloud_connected = False
+                        self.telemetry.cloud_detail = "not_configured"
+                        logger.debug("LINK-1: Cloud not configured; idling")
+                        await asyncio.sleep(poll_interval)
+                        continue
+
                     # Check cloud health
                     response = await client.get(
                         f"{self.config.cloud_url}/health",
                         timeout=5.0
                     )
-                    self.telemetry.cloud_connected = response.status_code == 200
+                    cloud_reachable = response.status_code == 200
+
+                    if not cloud_reachable:
+                        self.telemetry.cloud_connected = False
+                        self.telemetry.cloud_detail = "unreachable"
+                        logger.debug("LINK-1: Cloud unreachable; buffering")
+                        await asyncio.sleep(poll_interval)
+                        continue
+
+                    # EDGE-CLOUD-1: Send heartbeat every heartbeat_interval,
+                    # regardless of whether event_id is known.
+                    # Heartbeat response tells us event_status for banner.
+                    now = time.time()
+                    if (now - last_heartbeat) >= heartbeat_interval and self.config.truck_token:
+                        last_heartbeat = now
+                        logger.debug("LINK-1: Cloud configured; attempting heartbeat")
+                        hb_detail = await self._send_cloud_heartbeat(client)
+                        # hb_detail is "healthy", "event_not_live", or "auth_rejected"
+                        if hb_detail:
+                            prev_detail = self.telemetry.cloud_detail
+                            self.telemetry.cloud_detail = hb_detail
+                            self.telemetry.cloud_connected = (hb_detail == "healthy")
+                            if hb_detail == "healthy" and prev_detail != "healthy":
+                                logger.info("LINK-1: Cloud connected")
+                        else:
+                            # Heartbeat failed but /health was OK
+                            self.telemetry.cloud_connected = False
+                            self.telemetry.cloud_detail = "unreachable"
+                            logger.debug("LINK-1: Heartbeat failed; cloud unreachable")
 
                     # Get production status and leaderboard if available
                     if self.config.event_id:
@@ -9436,7 +10632,7 @@ class PitCrewDashboard:
                         except Exception:
                             pass
 
-                        # Leaderboard for race position
+                        # PROGRESS-3: Leaderboard for race position + competitor tracking
                         try:
                             response = await client.get(
                                 f"{self.config.cloud_url}/api/v1/events/{self.config.event_id}/leaderboard",
@@ -9447,72 +10643,204 @@ class PitCrewDashboard:
                                 data = response.json()
                                 entries = data.get('entries', [])
                                 self.telemetry.total_vehicles = len(entries)
+                                self.telemetry.course_length_miles = data.get('course_length_miles')
 
-                                # Find our vehicle in the leaderboard
-                                for entry in entries:
+                                # Find our vehicle and extract progress + competitors
+                                my_idx = None
+                                for i, entry in enumerate(entries):
                                     if entry.get('vehicle_id') == self.config.vehicle_id:
+                                        my_idx = i
                                         self.telemetry.race_position = entry.get('position', 0)
                                         self.telemetry.last_checkpoint = entry.get('last_checkpoint', 0)
                                         self.telemetry.delta_to_leader_ms = entry.get('delta_to_leader_ms', 0)
+                                        self.telemetry.progress_miles = entry.get('progress_miles')
+                                        self.telemetry.miles_remaining = entry.get('miles_remaining')
                                         break
+
+                                # PROGRESS-3: Compute competitor ahead/behind
+                                if my_idx is not None:
+                                    self._compute_competitors(entries, my_idx)
+                                else:
+                                    self.telemetry.competitor_ahead = None
+                                    self.telemetry.competitor_behind = None
                         except Exception as e:
                             logger.debug(f"Leaderboard fetch failed: {e}")
 
-                        # Send heartbeat every 10 seconds (every 2nd loop iteration)
-                        heartbeat_counter += 1
-                        if heartbeat_counter >= 2 and self.config.truck_token:
-                            heartbeat_counter = 0
-                            await self._send_cloud_heartbeat(client)
-
+                except asyncio.CancelledError:
+                    logger.info("LINK-1: Cloud status loop cancelled")
+                    raise
                 except Exception as e:
                     self.telemetry.cloud_connected = False
+                    self.telemetry.cloud_detail = "unreachable"
                     logger.debug(f"Cloud status check failed: {e}")
 
-                await asyncio.sleep(5)
+                await asyncio.sleep(poll_interval)
 
-    async def _send_cloud_heartbeat(self, client: httpx.AsyncClient):
-        """Send heartbeat to cloud with streaming and device status."""
-        try:
-            # Build camera info from current status
-            cameras = []
-            for cam_name, device in self._camera_devices.items():
-                status = self._camera_status.get(cam_name, "unknown")
-                cameras.append({
-                    "name": cam_name,
-                    "device": device if os.path.exists(device) else None,
-                    "status": status if os.path.exists(device) else "offline",
-                })
+    def _restart_cloud_status_loop(self):
+        """LINK-1: Cancel and restart the cloud status loop.
 
-            # Get streaming status
-            streaming = self.get_streaming_status()
+        Called after settings save to pick up new cloud_url / truck_token
+        without requiring a full process restart. Safe to call multiple times;
+        cancels any existing task before creating a new one.
+        """
+        # Cancel existing task if running
+        if self._cloud_status_task and not self._cloud_status_task.done():
+            self._cloud_status_task.cancel()
+            logger.info("LINK-1: Cancelled existing cloud status loop for restart")
 
-            # Build heartbeat payload
-            payload = {
-                "streaming_status": streaming.get("status", "idle"),
-                "streaming_camera": streaming.get("camera"),
-                "streaming_started_at": streaming.get("started_at"),
-                "streaming_error": streaming.get("error"),
-                "cameras": cameras,
-                "last_can_ts": self.telemetry.last_update_ms if self.telemetry.last_update_ms > 0 else None,
-                "last_gps_ts": self.telemetry.gps_ts_ms if self.telemetry.gps_ts_ms > 0 else None,
-                "youtube_configured": bool(self.config.youtube_stream_key),
-                "youtube_url": self.config.youtube_live_url or None,
+        # Launch fresh loop
+        self._cloud_status_task = asyncio.ensure_future(self._cloud_status_loop())
+        logger.info("LINK-1: Cloud status loop restarted after settings change")
+
+    def _compute_competitors(self, entries: list, my_idx: int):
+        """PROGRESS-3: Compute closest competitor ahead and behind from leaderboard entries."""
+        my_entry = entries[my_idx]
+        my_progress = my_entry.get('progress_miles')
+
+        # Competitor ahead (lower index = higher position)
+        if my_idx > 0:
+            ahead = entries[my_idx - 1]
+            ahead_progress = ahead.get('progress_miles')
+            gap_miles = None
+            if my_progress is not None and ahead_progress is not None:
+                gap_miles = round(ahead_progress - my_progress, 1)
+            self.telemetry.competitor_ahead = {
+                "vehicle_number": ahead.get('vehicle_number', '?'),
+                "team_name": ahead.get('team_name', ''),
+                "progress_miles": ahead_progress,
+                "miles_remaining": ahead.get('miles_remaining'),
+                "gap_miles": gap_miles,
             }
+        else:
+            self.telemetry.competitor_ahead = None  # We are leading
 
-            response = await client.post(
-                f"{self.config.cloud_url}/api/v1/production/events/{self.config.event_id}/edge/heartbeat",
-                json=payload,
-                headers={"X-Truck-Token": self.config.truck_token},
-                timeout=5.0
-            )
+        # Competitor behind (higher index = lower position)
+        if my_idx < len(entries) - 1:
+            behind = entries[my_idx + 1]
+            behind_progress = behind.get('progress_miles')
+            gap_miles = None
+            if my_progress is not None and behind_progress is not None:
+                gap_miles = round(my_progress - behind_progress, 1)
+            self.telemetry.competitor_behind = {
+                "vehicle_number": behind.get('vehicle_number', '?'),
+                "team_name": behind.get('team_name', ''),
+                "progress_miles": behind_progress,
+                "miles_remaining": behind.get('miles_remaining'),
+                "gap_miles": gap_miles,
+            }
+        else:
+            self.telemetry.competitor_behind = None  # We are last
 
-            if response.status_code == 200:
-                logger.debug("Cloud heartbeat sent successfully")
-            else:
-                logger.debug(f"Cloud heartbeat failed: HTTP {response.status_code}")
+    async def _send_cloud_heartbeat(self, client: httpx.AsyncClient) -> Optional[str]:
+        """Send heartbeat to cloud with streaming and device status.
+
+        CLOUD-EDGE-STATUS-1: Uses two-tier approach:
+        1. Simple presence heartbeat (always works with just truck_token)
+        2. Detailed production heartbeat (requires event_id for streaming status)
+
+        EDGE-CLOUD-1: Returns cloud_detail string for banner display:
+        - "healthy": connected and event is in_progress
+        - "event_not_live": connected but event is draft/scheduled/completed
+        - "auth_rejected": truck token invalid (401)
+        - None: heartbeat failed (caller sets "unreachable")
+        """
+        try:
+            # ── 1. Simple presence heartbeat (always send if truck_token is set) ──
+            # This updates last_seen for online/offline detection even without event_id
+            simple_ok = False
+            cloud_detail = None
+            try:
+                # CLOUD-MANAGE-0: Include edge_url in simple heartbeat body
+                # so Team Dashboard can auto-discover edge before event_id is known
+                lan_ip = _detect_lan_ip()
+                simple_payload = {
+                    "edge_url": f"http://{lan_ip}:{self.config.port}",
+                    "capabilities": ["pit_crew_dashboard", "telemetry", "cameras"],
+                }
+                response = await client.post(
+                    f"{self.config.cloud_url}/api/v1/telemetry/heartbeat",
+                    json=simple_payload,
+                    headers={"X-Truck-Token": self.config.truck_token},
+                    timeout=5.0
+                )
+                if response.status_code == 200:
+                    simple_ok = True
+                    data = response.json()
+                    # EDGE-CLOUD-1: Determine cloud_detail from event_status
+                    event_status = data.get("event_status", "")
+                    if event_status == "in_progress":
+                        cloud_detail = "healthy"
+                    else:
+                        cloud_detail = "event_not_live"
+                    # Auto-discover event_id if we don't have it
+                    # LINK-2: Persist to disk so it survives restarts and unblocks pit notes sync
+                    if not self.config.event_id and data.get("event_id"):
+                        self.config.event_id = data["event_id"]
+                        self.config.save()
+                        logger.info(f"LINK-2: Auto-discovered and saved event_id: {self.config.event_id}")
+                elif response.status_code == 401:
+                    cloud_detail = "auth_rejected"
+                    logger.warning("Simple heartbeat rejected: invalid truck token")
+                elif response.status_code == 400:
+                    # Vehicle not registered for any event
+                    cloud_detail = "event_not_live"
+                    logger.info("Simple heartbeat: vehicle not registered for any event")
+            except Exception as e:
+                logger.debug(f"Simple heartbeat failed: {e}")
+
+            # ── 2. Detailed production heartbeat (if event_id is available) ──
+            # This sends streaming/camera status for production dashboard
+            if self.config.event_id:
+                # Build camera info from current status
+                cameras = []
+                for cam_name, device in self._camera_devices.items():
+                    status = self._camera_status.get(cam_name, "unknown")
+                    cameras.append({
+                        "name": cam_name,
+                        "device": device if os.path.exists(device) else None,
+                        "status": status if os.path.exists(device) else "offline",
+                    })
+
+                # Get streaming status
+                streaming = self.get_streaming_status()
+
+                # EDGE-URL-1: Build edge URL from detected LAN IP + configured port
+                lan_ip = _detect_lan_ip()
+                edge_url = f"http://{lan_ip}:{self.config.port}"
+
+                # Build detailed payload
+                payload = {
+                    "streaming_status": streaming.get("status", "idle"),
+                    "streaming_camera": streaming.get("camera"),
+                    "streaming_started_at": streaming.get("started_at"),
+                    "streaming_error": streaming.get("error"),
+                    "cameras": cameras,
+                    "last_can_ts": self.telemetry.last_update_ms if self.telemetry.last_update_ms > 0 else None,
+                    "last_gps_ts": self.telemetry.gps_ts_ms if self.telemetry.gps_ts_ms > 0 else None,
+                    "youtube_configured": bool(self.config.youtube_stream_key),
+                    "youtube_url": self.config.youtube_live_url or None,
+                    "edge_url": edge_url,  # EDGE-URL-1
+                }
+
+                response = await client.post(
+                    f"{self.config.cloud_url}/api/v1/production/events/{self.config.event_id}/edge/heartbeat",
+                    json=payload,
+                    headers={"X-Truck-Token": self.config.truck_token},
+                    timeout=5.0
+                )
+
+                if response.status_code == 200:
+                    logger.info(f"Cloud heartbeat OK (simple={simple_ok}, detailed=True)")
+                else:
+                    logger.warning(f"Detailed heartbeat rejected: HTTP {response.status_code}")
+            elif simple_ok:
+                logger.info("Cloud heartbeat OK (simple=True, detailed=skipped - no event_id)")
+
+            return cloud_detail
 
         except Exception as e:
-            logger.debug(f"Cloud heartbeat error: {e}")
+            logger.warning(f"Cloud heartbeat error: {e}")
+            return None
 
     async def _cloud_command_listener(self):
         """
@@ -9628,11 +10956,12 @@ class PitCrewDashboard:
                     logger.warning(f"[camera-switch] Missing camera param, request_id={request_id}")
                     return {"status": "error", "message": "Missing camera parameter"}
 
-                # Validate camera_id
-                valid_cameras = {'chase', 'pov', 'roof', 'front'}
-                if camera not in valid_cameras:
+                # CAM-CONTRACT-1B: Accept both canonical and legacy camera names
+                all_valid_cameras = {'main', 'cockpit', 'chase', 'suspension', 'pov', 'roof', 'front', 'rear'}
+                if camera not in all_valid_cameras:
                     logger.warning(f"[camera-switch] Invalid camera={camera}, request_id={request_id}")
-                    return {"status": "error", "message": f"Invalid camera: {camera}"}
+                    return {"status": "error", "message": f"Invalid camera: {camera}. Valid: main, cockpit, chase, suspension"}
+                camera = self._normalize_camera_slot(camera)
 
                 logger.info(f"[camera-switch] Received: camera={camera}, current={self._streaming_state['camera']}, streaming={self._streaming_state['status']}, request_id={request_id}")
 
@@ -9815,13 +11144,16 @@ class PitCrewDashboard:
         logger.info("=" * 60)
 
         # Start background tasks
+        # LINK-1: Track cloud status task handle so _restart_cloud_status_loop can cancel it
+        self._cloud_status_task = asyncio.create_task(self._cloud_status_loop())
         tasks = [
             asyncio.create_task(self._zmq_subscriber()),
-            asyncio.create_task(self._cloud_status_loop()),
+            self._cloud_status_task,
             asyncio.create_task(self._cloud_command_listener()),  # ADDED: Cloud command listener
             asyncio.create_task(self._monitor_audio()),
             asyncio.create_task(self._screenshot_capture_loop()),  # ADDED: Periodic camera screenshots
             asyncio.create_task(self._auto_downshift_loop()),  # STREAM-4: Auto quality downshift
+            asyncio.create_task(self._pit_notes_sync_loop()),  # PIT-COMMS-1: Background note sync
         ]
 
         # Start web server

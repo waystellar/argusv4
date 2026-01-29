@@ -639,34 +639,77 @@ class UplinkService:
         self._upload_task: Optional[asyncio.Task] = None
         self._stats_task: Optional[asyncio.Task] = None
 
+    def _write_state_file(self, status: str):
+        """PIT-UPLINK-1: Write uplink state to disk for dashboard observability."""
+        try:
+            state = {
+                "status": status,
+                "cloud_url": self.config.cloud_url or None,
+                "vehicle_number": self.config.vehicle_number,
+                "epoch": int(time.time()),
+            }
+            state_path = Path("/opt/argus/state/uplink_status.json")
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(json.dumps(state))
+        except Exception:
+            pass  # Non-critical
+
     async def start(self):
         """Start all service components."""
         logger.info("=" * 60)
         logger.info("Argus Uplink Service Starting")
         logger.info("=" * 60)
         logger.info(f"Vehicle: {self.config.vehicle_number}")
-        logger.info(f"Cloud URL: {self.config.cloud_url}")
+        logger.info(f"Cloud URL: {self.config.cloud_url or '(not configured)'}")
         logger.info(f"Queue DB: {self.config.db_path}")
         logger.info(f"Batch size: {self.config.batch_size}")
         # EDGE-7: Uplink runs independently of data sources
         logger.info("Mode: independent (queues available data; GPS/CAN/ANT optional)")
         logger.info("=" * 60)
 
-        # Validate configuration
-        if not self.config.cloud_url:
-            logger.error("ARGUS_CLOUD_URL not set!")
-            return
-
-        if not self.config.truck_token:
-            logger.error("ARGUS_TRUCK_TOKEN not set!")
-            return
-
         self._running = True
+
+        # PIT-UPLINK-1: Wait for config instead of exiting.
+        # Re-read env vars every 30s so the service stays alive (systemd sees
+        # Active: active (running)) and picks up config written by the dashboard
+        # or provisioning system.
+        config_warned = False
+        while self._running:
+            self.config = UplinkConfig.from_env()
+            if self.config.cloud_url and self.config.truck_token:
+                break
+            if not config_warned:
+                missing = []
+                if not self.config.cloud_url:
+                    missing.append("ARGUS_CLOUD_URL")
+                if not self.config.truck_token:
+                    missing.append("ARGUS_TRUCK_TOKEN")
+                logger.warning(
+                    f"PIT-UPLINK-1: Waiting for cloud configuration "
+                    f"({', '.join(missing)} not set). Will re-check every 30s."
+                )
+                config_warned = True
+            self._write_state_file("not_configured")
+            try:
+                await asyncio.sleep(30)
+            except asyncio.CancelledError:
+                return
+
+        if not self._running:
+            return
+
+        logger.info(f"Cloud config ready: {self.config.cloud_url}")
+        self._write_state_file("starting")
+
+        # Re-create uploader with fresh config (cloud_url/token may have changed)
+        self.uploader = CloudUploader(self.config)
 
         # Initialize components
         await self.queue.initialize()
         await self.uploader.initialize()
         await self.collector.initialize(self.config)
+
+        self._write_state_file("running")
 
         # Start background tasks
         self._upload_task = asyncio.create_task(self._upload_loop())

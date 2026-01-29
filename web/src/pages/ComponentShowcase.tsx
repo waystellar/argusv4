@@ -72,7 +72,7 @@ export default function ComponentShowcase() {
         <div className="max-w-ds-wide mx-auto">
           <h1 className="text-ds-display text-neutral-50">Component Showcase</h1>
           <p className="text-ds-body text-neutral-400 mt-ds-1">
-            Argus Design System - All components in one place
+            Design System - All components in one place
           </p>
         </div>
       </header>

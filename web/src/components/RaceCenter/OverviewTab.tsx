@@ -63,7 +63,7 @@ export default function OverviewTab({
   return (
     <div className="flex flex-col h-full overflow-hidden bg-neutral-950">
       {/* Map Section - Takes ~50% on mobile */}
-      <div className="relative flex-1 min-h-[200px] max-h-[50vh]">
+      <div className="relative flex-1 min-h-[200px] max-h-[50vh] overflow-hidden">
         <RaceMap
           positions={positions}
           onVehicleClick={onVehicleSelect}
@@ -77,8 +77,16 @@ export default function OverviewTab({
           courseGeoJSON={courseGeoJSON}
         />
 
+        {/* FAN-TRACKER-1: No vehicles banner — map still renders underneath */}
+        {positions.length === 0 && (
+          <div className="absolute top-ds-2 left-ds-2 right-14 z-10">
+            <Alert variant="info" className="py-ds-1 px-ds-3 text-ds-caption">
+              No vehicles transmitting yet — map is ready
+            </Alert>
+          </div>
+        )}
         {/* Stale Data Warning */}
-        {hasStaleData && (
+        {hasStaleData && positions.length > 0 && (
           <div className="absolute top-ds-2 left-ds-2 right-14 z-10">
             <Alert variant="warning" className="py-ds-1 px-ds-3 text-ds-caption">
               Some positions are stale (30s+)
@@ -271,13 +279,18 @@ function FeaturedVehicleTile({
         </div>
       </div>
 
-      {/* Delta */}
+      {/* Delta + Miles Remaining */}
       <div className="text-right shrink-0">
         <div className={`font-mono text-ds-title font-bold ${isLeader ? 'text-status-warning' : 'text-neutral-200'}`}>
           {isLeader ? '--:--' : entry.delta_formatted}
         </div>
         {!isLeader && (
           <div className="text-ds-caption text-neutral-500">to leader</div>
+        )}
+        {entry.miles_remaining != null && (
+          <div className="text-ds-caption text-neutral-400 tabular-nums">
+            {entry.miles_remaining.toFixed(1)} mi remaining
+          </div>
         )}
       </div>
 
@@ -333,9 +346,16 @@ function MiniLeaderboardRow({
         <span className="text-ds-body-sm text-neutral-500 ml-ds-2 truncate hidden sm:inline">{entry.team_name}</span>
       </div>
 
-      {/* Delta */}
-      <div className="font-mono text-ds-body-sm text-neutral-300 tabular-nums">
-        {entry.position === 1 ? 'LEADER' : entry.delta_formatted}
+      {/* Delta + Miles */}
+      <div className="text-right shrink-0">
+        <div className="font-mono text-ds-body-sm text-neutral-300 tabular-nums">
+          {entry.position === 1 ? 'LEADER' : entry.delta_formatted}
+        </div>
+        {entry.miles_remaining != null && (
+          <div className="text-ds-caption text-neutral-500 tabular-nums">
+            {entry.miles_remaining.toFixed(1)} mi
+          </div>
+        )}
       </div>
 
       {/* Favorite */}

@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # fan_map_theme_smoke.sh — Smoke test for map theme defaults
 #
-# Validates:
+# MAP-STYLE-1 + MAP-STYLE-2: Maps always use light topo basemap regardless
+# of UI theme. CARTO dark/light tiles removed. Tile URLs centralized in
+# config/basemap.ts (MAP-STYLE-2). This test verifies that:
 #   1. Web frontend builds (tsc + vite build via Docker)
-#   2. Default theme is 'system' (not hardcoded 'dark')
-#   3. Sunlight tile source is CARTO light (not dark_all)
-#   4. dark_all is NOT the default for Watch Live (only used when resolved dark)
-#   5. CARTO light tiles are reachable
-#   6. CSP permits basemaps.cartocdn.com for both light and dark
+#   2. Default theme is 'system' (themeStore still exists for UI)
+#   3. Map uses OpenTopoMap (no CARTO tiles, no theme-driven switching)
+#   4. OpenTopoMap tiles are reachable
+#   5. CSP permits tile.opentopomap.org
 #
 # Usage:
 #   bash scripts/fan_map_theme_smoke.sh
@@ -18,6 +19,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 WEB_DIR="$REPO_ROOT/web"
+BASEMAP_TS="$WEB_DIR/src/config/basemap.ts"
 MAP_FILE="$WEB_DIR/src/components/Map/Map.tsx"
 THEME_FILE="$WEB_DIR/src/stores/themeStore.ts"
 NGINX_CONF="$WEB_DIR/nginx.conf"
@@ -48,28 +50,24 @@ fi
 log "Step 2: Default theme checks"
 
 if [ -f "$THEME_FILE" ]; then
-  # The Zustand store initial state should default to 'system'
   if grep -q "theme: 'system'" "$THEME_FILE" 2>/dev/null; then
     pass "Default theme is 'system' (auto light/dark)"
   else
     fail "Default theme is NOT 'system'"
   fi
 
-  # resolvedTheme should use getSystemTheme() not hardcoded 'dark'
   if grep -q "resolvedTheme: getSystemTheme()" "$THEME_FILE" 2>/dev/null; then
     pass "resolvedTheme defaults to getSystemTheme()"
   else
     fail "resolvedTheme does not default to getSystemTheme()"
   fi
 
-  # Fallback should also use getSystemTheme()
   if grep -q "applyTheme(getSystemTheme())" "$THEME_FILE" 2>/dev/null; then
     pass "Fallback uses getSystemTheme()"
   else
     fail "Fallback does not use getSystemTheme()"
   fi
 
-  # getSystemTheme should return 'sunlight' during daytime
   if grep -q "isDaytime.*sunlight.*dark\|return isDaytime.*sunlight" "$THEME_FILE" 2>/dev/null; then
     pass "getSystemTheme uses time-of-day heuristic"
   else
@@ -79,81 +77,72 @@ else
   fail "themeStore.ts not found"
 fi
 
-# ── 3. Sunlight tile source is CARTO light ─────────────────────────
-log "Step 3: Tile source checks"
+# ── 3. Map uses OpenTopoMap only (no CARTO, no theme switching) ───
+log "Step 3: Map tile source checks"
+
+# MAP-STYLE-2: Tile URLs are in centralized config
+if [ -f "$BASEMAP_TS" ]; then
+  if grep -q "tile.opentopomap.org" "$BASEMAP_TS"; then
+    pass "Basemap config uses OpenTopoMap tiles"
+  else
+    fail "Basemap config missing OpenTopoMap tiles"
+  fi
+
+  if grep -q "background-color.*#f2efe9\|backgroundColor.*#f2efe9\|'background'" "$BASEMAP_TS"; then
+    pass "Basemap config has light background layer for tile fallback"
+  else
+    fail "Basemap config missing light background layer"
+  fi
+else
+  fail "config/basemap.ts not found"
+fi
 
 if [ -f "$MAP_FILE" ]; then
-  # Sunlight should use light_all, not dark_all
-  if grep -q "light_all" "$MAP_FILE" 2>/dev/null; then
-    pass "Map.tsx has CARTO light_all tiles"
+  # MAP-STYLE-1: Must NOT have CARTO tiles (removed)
+  if grep -q "dark_all\|light_all\|basemaps.cartocdn.com" "$MAP_FILE"; then
+    fail "Map.tsx still has CARTO tile references (should be topo-only)"
   else
-    fail "Map.tsx missing CARTO light_all tiles"
+    pass "No CARTO tile references in Map.tsx (topo-only)"
   fi
 
-  # Both tile sources should be basemaps.cartocdn.com
-  TILE_LINES=$(grep '{z}/{x}/{y}' "$MAP_FILE" 2>/dev/null)
-  DARK_TILE=$(echo "$TILE_LINES" | grep "dark_all" || echo "")
-  LIGHT_TILE=$(echo "$TILE_LINES" | grep "light_all" || echo "")
-
-  if [ -n "$DARK_TILE" ] && [ -n "$LIGHT_TILE" ]; then
-    pass "Both dark_all and light_all tile sources present"
+  # MAP-STYLE-1: Must NOT have theme-driven tile switching
+  if grep -q "TILE_SOURCES\|useThemeStore" "$MAP_FILE"; then
+    fail "Map.tsx still has theme-driven tile switching"
   else
-    fail "Missing dark_all or light_all tile source"
+    pass "No theme-driven tile switching in Map.tsx"
   fi
 
-  # Both should use basemaps.cartocdn.com
-  NON_CARTO=$(echo "$TILE_LINES" | grep -v "basemaps.cartocdn.com" || echo "")
-  if [ -z "$NON_CARTO" ]; then
-    pass "All tile sources use basemaps.cartocdn.com"
+  # MAP-STYLE-2: Must import from shared config
+  if grep -q "import.*buildBasemapStyle.*from.*config/basemap" "$MAP_FILE"; then
+    pass "Map.tsx imports from shared basemap config"
   else
-    warn "Some tile sources use non-CARTO domains"
+    fail "Map.tsx does not import from shared basemap config"
   fi
 else
   fail "Map.tsx not found"
 fi
 
-# ── 4. dark_all is NOT the sole/default tile ───────────────────────
-log "Step 4: Default tile is not dark_all"
+# ── 4. OpenTopoMap tiles reachable ─────────────────────────────────
+log "Step 4: OpenTopoMap tile reachability"
 
-if [ -f "$MAP_FILE" ]; then
-  # The sunlight entry must NOT point to dark_all
-  # Check the sunlight block specifically
-  SUNLIGHT_BLOCK=$(awk '/sunlight:/{found=1} found{print; if(/\}/) exit}' "$MAP_FILE" 2>/dev/null)
-  if echo "$SUNLIGHT_BLOCK" | grep -q "dark_all"; then
-    fail "Sunlight tile source still uses dark_all"
-  else
-    pass "Sunlight tile source does not use dark_all"
-  fi
-fi
-
-# ── 5. CARTO light tiles reachable ─────────────────────────────────
-log "Step 5: CARTO light tile reachability"
-
-LIGHT_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
-  "https://basemaps.cartocdn.com/light_all/0/0/0.png" 2>/dev/null || echo "000")
-if [ "$LIGHT_CODE" = "200" ] || [ "$LIGHT_CODE" = "304" ]; then
-  pass "CARTO light_all tile reachable (HTTP $LIGHT_CODE)"
+TOPO_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
+  -H "User-Agent: ArgusSmoke/1.0" \
+  "https://a.tile.opentopomap.org/0/0/0.png" 2>/dev/null || echo "000")
+if [ "$TOPO_CODE" = "200" ] || [ "$TOPO_CODE" = "304" ]; then
+  pass "OpenTopoMap tile reachable (HTTP $TOPO_CODE)"
 else
-  fail "CARTO light_all tile returned HTTP $LIGHT_CODE"
+  warn "OpenTopoMap tile returned HTTP $TOPO_CODE (may be rate-limited)"
 fi
 
-DARK_CODE=$(curl -s -o /dev/null -w '%{http_code}' \
-  "https://basemaps.cartocdn.com/dark_all/0/0/0.png" 2>/dev/null || echo "000")
-if [ "$DARK_CODE" = "200" ] || [ "$DARK_CODE" = "304" ]; then
-  pass "CARTO dark_all tile reachable (HTTP $DARK_CODE)"
-else
-  fail "CARTO dark_all tile returned HTTP $DARK_CODE"
-fi
-
-# ── 6. CSP permits basemaps.cartocdn.com ───────────────────────────
-log "Step 6: CSP coverage"
+# ── 5. CSP permits tile.opentopomap.org ───────────────────────────
+log "Step 5: CSP coverage"
 
 if [ -f "$NGINX_CONF" ]; then
   CSP_LINE=$(grep -i "content-security-policy" "$NGINX_CONF" 2>/dev/null || echo "")
-  if echo "$CSP_LINE" | grep -q "basemaps.cartocdn.com"; then
-    pass "CSP permits basemaps.cartocdn.com (covers both light and dark)"
+  if echo "$CSP_LINE" | grep -q "tile.opentopomap.org"; then
+    pass "CSP permits tile.opentopomap.org"
   else
-    fail "CSP missing basemaps.cartocdn.com"
+    fail "CSP missing tile.opentopomap.org"
   fi
 else
   warn "nginx.conf not found — skipping CSP check"

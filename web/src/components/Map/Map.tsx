@@ -15,33 +15,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 import maplibregl from 'maplibre-gl'
 import type { VehiclePosition } from '../../api/client'
-import { useThemeStore, type ResolvedTheme } from '../../stores/themeStore'
-
-// Map tile sources for different themes
-// FIXED: Section A - Support light/dark/auto theme switching
-const TILE_SOURCES = {
-  dark: {
-    url: 'https://basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-  },
-  sunlight: {
-    url: 'https://basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png',
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
-  },
-}
-
-// Topo tile source (OpenTopoMap - contours, hillshade, trails)
-const TOPO_TILE_SOURCE = {
-  urls: [
-    'https://a.tile.opentopomap.org/{z}/{x}/{y}.png',
-    'https://b.tile.opentopomap.org/{z}/{x}/{y}.png',
-    'https://c.tile.opentopomap.org/{z}/{x}/{y}.png',
-  ],
-  attribution: '&copy; <a href="https://opentopomap.org">OpenTopoMap</a> (<a href="https://creativecommons.org/licenses/by-sa/3.0/">CC-BY-SA</a>) &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-  maxzoom: 17,
-}
-
-type MapLayer = 'topo' | 'streets'
+import { buildBasemapStyle } from '../../config/basemap'
 
 interface MapProps {
   positions: VehiclePosition[]
@@ -239,18 +213,14 @@ export default function Map({ positions, onVehicleClick, selectedVehicleId, cour
   // FIXED: P2-1 - Track previously selected vehicle to remove highlight
   const prevSelectedRef = useRef<string | null>(null)
 
-  // FIXED: Section A - Subscribe to theme for tile source switching
-  const resolvedTheme = useThemeStore((state) => state.resolvedTheme)
-  const prevThemeRef = useRef<ResolvedTheme | null>(null)
-
   // Map lock state for mobile - locked by default to allow page scrolling
   const [isMapLocked, setIsMapLocked] = useState(true)
   const [showUnlockHint, setShowUnlockHint] = useState(false)
   // FIXED: P2-4 - Map legend state
   const [showLegend, setShowLegend] = useState(false)
-  // Map layer: topo (default for race viewing) or streets
-  const [mapLayer, setMapLayer] = useState<MapLayer>('topo')
-  const prevLayerRef = useRef<MapLayer>('topo')
+  // CLOUD-MAP-2: Topo overlay unavailable (base map still shows)
+  const [topoUnavailable, setTopoUnavailable] = useState(false)
+  const topoErrorFiredRef = useRef(false)
 
   // Determine if we should use clustering based on vehicle count
   const shouldCluster = positions.length >= CLUSTER_THRESHOLD
@@ -351,63 +321,14 @@ export default function Map({ positions, onVehicleClick, selectedVehicleId, cour
     prevSelectedRef.current = selectedVehicleId || null
   }, [selectedVehicleId, positions])
 
-  // Get tile source for current theme
-  const getTileSource = useCallback((theme: ResolvedTheme) => {
-    return TILE_SOURCES[theme] || TILE_SOURCES.dark
-  }, [])
-
-  // Build MapLibre style object for the current layer + theme
-  const buildStyle = useCallback((layer: MapLayer, theme: ResolvedTheme): maplibregl.StyleSpecification => {
-    if (layer === 'topo') {
-      return {
-        version: 8,
-        sources: {
-          'base-tiles': {
-            type: 'raster',
-            tiles: TOPO_TILE_SOURCE.urls,
-            tileSize: 256,
-            attribution: TOPO_TILE_SOURCE.attribution,
-            maxzoom: TOPO_TILE_SOURCE.maxzoom,
-          }
-        },
-        layers: [{
-          id: 'base-tiles',
-          type: 'raster',
-          source: 'base-tiles',
-          minzoom: 0,
-          maxzoom: TOPO_TILE_SOURCE.maxzoom,
-        }]
-      }
-    }
-    const tileSource = getTileSource(theme)
-    return {
-      version: 8,
-      sources: {
-        'base-tiles': {
-          type: 'raster',
-          tiles: [tileSource.url],
-          tileSize: 256,
-          attribution: tileSource.attribution,
-        }
-      },
-      layers: [{
-        id: 'base-tiles',
-        type: 'raster',
-        source: 'base-tiles',
-        minzoom: 0,
-        maxzoom: 19,
-      }]
-    }
-  }, [getTileSource])
-
   // Initialize map
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return
 
-    // Use topo tiles by default for race viewing
+    // MAP-STYLE-2: Use centralized basemap config
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: buildStyle(mapLayer, resolvedTheme),
+      style: buildBasemapStyle(),
       center: [-116.38, 34.12], // Default to KOH area
       zoom: 12,
       attributionControl: false,
@@ -421,8 +342,25 @@ export default function Map({ positions, onVehicleClick, selectedVehicleId, cour
     // Add zoom controls (always visible)
     map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right')
 
+    // CLOUD-MAP-2: Detect topo overlay tile failures (base map unaffected).
+    // MapLibre error events include sourceId for tile-related errors.
+    // We only flag topo-tiles failures; base-tiles errors are left alone
+    // since CARTO is highly reliable. The ref prevents repeated setState.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    map.on('error', (e: any) => {
+      if (topoErrorFiredRef.current) return
+      const isTopoSource = e.sourceId === 'topo-tiles'
+      const isTileError = e.error?.message?.includes('tile') ||
+        e.error?.message?.includes('Failed to fetch') ||
+        e.error?.status === 429 || e.error?.status === 403 ||
+        e.error?.status === 0
+      if (isTopoSource || (isTileError && !e.sourceId)) {
+        topoErrorFiredRef.current = true
+        setTopoUnavailable(true)
+      }
+    })
+
     mapRef.current = map
-    prevThemeRef.current = resolvedTheme
 
     return () => {
       map.remove()
@@ -694,49 +632,7 @@ export default function Map({ positions, onVehicleClick, selectedVehicleId, cour
     })
   }, [onVehicleClick])
 
-  // FIXED: Section A - Update map tiles when theme changes
-  // (Moved after setupClusteringLayers to fix use-before-declaration)
-  // Rebuild tiles when theme changes (only affects streets layer)
-  useEffect(() => {
-    const map = mapRef.current
-    if (!map) return
-    // Skip if theme hasn't changed, or if we're on topo (theme doesn't affect topo tiles)
-    if (prevThemeRef.current === resolvedTheme) return
-    if (mapLayer === 'topo') {
-      prevThemeRef.current = resolvedTheme
-      return
-    }
-
-    const center = map.getCenter()
-    const zoom = map.getZoom()
-    map.setStyle(buildStyle(mapLayer, resolvedTheme))
-    map.setCenter(center)
-    map.setZoom(zoom)
-
-    if (clusteringEnabledRef.current) {
-      map.once('style.load', () => setupClusteringLayers(map))
-    }
-
-    prevThemeRef.current = resolvedTheme
-  }, [resolvedTheme, mapLayer, buildStyle, setupClusteringLayers])
-
-  // Rebuild tiles when layer changes (topo ↔ streets)
-  useEffect(() => {
-    const map = mapRef.current
-    if (!map || prevLayerRef.current === mapLayer) return
-
-    const center = map.getCenter()
-    const zoom = map.getZoom()
-    map.setStyle(buildStyle(mapLayer, resolvedTheme))
-    map.setCenter(center)
-    map.setZoom(zoom)
-
-    if (clusteringEnabledRef.current) {
-      map.once('style.load', () => setupClusteringLayers(map))
-    }
-
-    prevLayerRef.current = mapLayer
-  }, [mapLayer, resolvedTheme, buildStyle, setupClusteringLayers])
+  // MAP-STYLE-1: Theme/layer change effects removed — map always uses light topo.
 
   // Update markers when positions change
   useEffect(() => {
@@ -843,7 +739,7 @@ export default function Map({ positions, onVehicleClick, selectedVehicleId, cour
   }, [positions, onVehicleClick, shouldCluster, setupClusteringLayers])
 
   return (
-    <div className="relative w-full h-full">
+    <div className="relative w-full h-full overflow-hidden">
       {/* Map container */}
       <div
         ref={containerRef}
@@ -886,44 +782,26 @@ export default function Map({ positions, onVehicleClick, selectedVehicleId, cour
         <div className="absolute inset-0 pointer-events-none" />
       )}
 
-      {/* Layer toggle (Topo / Streets) */}
-      <div className="absolute top-2 left-2 z-10 flex flex-col gap-1.5">
-        <div className="bg-black/80 rounded-lg flex overflow-hidden text-xs font-medium">
-          <button
-            onClick={() => setMapLayer('topo')}
-            className={`px-2.5 py-1.5 transition-colors ${
-              mapLayer === 'topo'
-                ? 'bg-blue-600 text-white'
-                : 'text-gray-300 hover:text-white hover:bg-white/10'
-            }`}
-            aria-pressed={mapLayer === 'topo'}
-          >
-            Topo
-          </button>
-          <button
-            onClick={() => setMapLayer('streets')}
-            className={`px-2.5 py-1.5 transition-colors ${
-              mapLayer === 'streets'
-                ? 'bg-blue-600 text-white'
-                : 'text-gray-300 hover:text-white hover:bg-white/10'
-            }`}
-            aria-pressed={mapLayer === 'streets'}
-          >
-            Streets
-          </button>
+      {/* CLOUD-MAP-2: Topo overlay unavailable banner (base map still visible) */}
+      {topoUnavailable && (
+        <div className="absolute top-2 left-2 z-10 bg-amber-800/90 text-amber-100 text-xs px-3 py-1.5 rounded-lg flex items-center gap-1.5">
+          <svg className="w-3.5 h-3.5 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+          </svg>
+          Topo layer unavailable — showing base map
         </div>
+      )}
 
-        {/* Clustering indicator */}
-        {shouldCluster && (
-          <div className="bg-black/70 text-white text-xs px-2 py-1 rounded-lg flex items-center gap-1.5">
-            <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
-            </svg>
-            <span>{positions.length} vehicles (clustered)</span>
-          </div>
-        )}
-      </div>
+      {/* Clustering indicator */}
+      {shouldCluster && !topoUnavailable && (
+        <div className="absolute top-2 left-2 z-10 bg-black/70 text-white text-xs px-2 py-1 rounded-lg flex items-center gap-1.5">
+          <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+              d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+          </svg>
+          <span>{positions.length} vehicles (clustered)</span>
+        </div>
+      )}
 
       {/* FIXED: P2-4 - Map Legend */}
       <MapLegend

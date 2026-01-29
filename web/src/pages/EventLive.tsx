@@ -89,7 +89,7 @@ export default function EventLive() {
   const handleShare = useCallback(async () => {
     const shareUrl = window.location.href
     const shareTitle = event?.name || 'Live Race'
-    const shareText = `Watch ${shareTitle} live on Argus Racing!`
+    const shareText = `Watch ${shareTitle} live!`
 
     // Try Web Share API first (mobile)
     if (navigator.share) {

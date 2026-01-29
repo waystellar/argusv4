@@ -18,7 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_session
-from app.models import Event, EventVehicle, Vehicle, VideoFeed, Position
+from app.models import Event, EventVehicle, Vehicle, VideoFeed, Position, PitNote
 from app import redis_client
 from app.config import get_settings
 from app.services.auth import require_admin, AuthInfo
@@ -130,6 +130,8 @@ class EdgeHeartbeatRequest(BaseModel):
     last_gps_ts: Optional[int]  # Last GPS timestamp
     youtube_configured: bool  # Whether YouTube stream key is set
     youtube_url: Optional[str]  # Public YouTube URL
+    # EDGE-URL-1: Edge device self-reported base URL for Pit Crew Portal access
+    edge_url: Optional[str] = None  # e.g. http://192.168.0.18:8080
 
 
 class EdgeStatusResponse(BaseModel):
@@ -803,8 +805,29 @@ async def list_available_cameras(
         if featured_cameras.get(feed.vehicle_id) == feed.camera_name:
             feed.featured = True
 
-    # Sort by vehicle number, then camera name
-    feeds.sort(key=lambda f: (f.vehicle_number, f.camera_name))
+    # PROD-CAM-1: Ensure all 4 canonical camera slots exist for each vehicle
+    # Add placeholder feeds for any missing camera slots
+    for row in event_vehicles:
+        vehicle = row.Vehicle
+        for cam_name in CANONICAL_CAMERAS:
+            key = (vehicle.vehicle_id, cam_name)
+            if key not in seen_cameras:
+                # Add placeholder camera (not detected/configured yet)
+                seen_cameras.add(key)
+                feeds.append(CameraFeedResponse(
+                    vehicle_id=vehicle.vehicle_id,
+                    vehicle_number=vehicle.vehicle_number,
+                    team_name=vehicle.team_name,
+                    camera_name=cam_name,
+                    youtube_url="",
+                    embed_url="",
+                    is_live=False,
+                    featured=featured_cameras.get(vehicle.vehicle_id) == cam_name,
+                ))
+
+    # Sort by vehicle number, then camera name (canonical order)
+    camera_order = {cam: i for i, cam in enumerate(CANONICAL_CAMERAS)}
+    feeds.sort(key=lambda f: (f.vehicle_number, camera_order.get(f.camera_name, 99)))
 
     return feeds
 
@@ -1023,13 +1046,24 @@ async def edge_heartbeat(
         "youtube_configured": data.youtube_configured,
         "youtube_url": data.youtube_url,
         "heartbeat_ts": int(time.time() * 1000),
+        # EDGE-URL-1: Store edge device URL for Team Dashboard auto-discovery
+        "edge_url": data.edge_url,
     }
 
     # Store in Redis (expires after 30s if not refreshed)
     await redis_client.set_edge_status(event_id, vehicle_id, status)
 
+    # Update last-seen so Team Dashboard shows "online" from heartbeat alone
+    # (previously only set by telemetry ingest, so edge showed "unknown" until GPS data arrived)
+    heartbeat_ts = status["heartbeat_ts"]
+    await redis_client.set_vehicle_last_seen(event_id, vehicle_id, heartbeat_ts)
+
     # Publish to SSE for real-time updates
     await redis_client.publish_edge_status(event_id, vehicle_id, status)
+
+    log = structlog.get_logger()
+    log.info("edge_heartbeat_received", vehicle_id=vehicle_id, event_id=event_id,
+             streaming_status=data.streaming_status, cameras=len(data.cameras))
 
     return {"success": True, "vehicle_id": vehicle_id}
 
@@ -1413,7 +1447,34 @@ async def get_production_status(
 # Bidirectional cloud ↔ edge communication for camera control
 
 VALID_COMMANDS = {"set_active_camera", "start_stream", "stop_stream", "list_cameras", "get_status", "set_stream_profile"}
-VALID_CAMERAS = {"chase", "pov", "roof", "front"}
+
+# CAM-CONTRACT-1B: Canonical 4-camera slots with backward compatibility
+# Canonical names: main, cockpit, chase, suspension
+VALID_CAMERAS = {"main", "cockpit", "chase", "suspension"}
+
+# CAM-CONTRACT-1B: Backward compatibility aliases for legacy edge devices
+CAMERA_SLOT_ALIASES = {
+    "pov": "cockpit",
+    "roof": "chase",
+    "front": "suspension",
+    "rear": "suspension",  # CAM-CONTRACT-1B: rear is now suspension
+    "cam0": "main",
+    "camera": "main",
+    "default": "main",
+}
+
+# All valid camera names (canonical + aliases) for validation
+ALL_VALID_CAMERAS = VALID_CAMERAS | set(CAMERA_SLOT_ALIASES.keys())
+
+def normalize_camera_slot(slot_id: str) -> str:
+    """CAM-CONTRACT-1B: Normalize camera slot to canonical name."""
+    if slot_id in VALID_CAMERAS:
+        return slot_id
+    return CAMERA_SLOT_ALIASES.get(slot_id, slot_id)
+
+# PROD-CAM-1 + CAM-CONTRACT-1B: Canonical camera slots - always show 4 cameras per vehicle
+# Order matters for grid display (main first as primary broadcast camera)
+CANONICAL_CAMERAS = ["main", "cockpit", "chase", "suspension"]
 VALID_STREAM_PROFILES = {"1080p30", "720p30", "480p30", "360p30"}
 
 
@@ -1429,8 +1490,9 @@ async def send_edge_command(
     Send a command to an edge device.
 
     Commands:
-    - set_active_camera: Switch to a different camera. Params: {"camera": "chase|pov|roof|front"}
-    - start_stream: Start streaming with current or specified camera. Params: {"camera": "chase"} (optional)
+    - set_active_camera: Switch to a different camera. Params: {"camera": "main|cockpit|chase|suspension"}
+      CAM-CONTRACT-1B: Also accepts legacy names (pov, roof, front, rear) which are auto-normalized.
+    - start_stream: Start streaming with current or specified camera. Params: {"camera": "main"} (optional)
     - stop_stream: Stop streaming
     - list_cameras: Request list of available cameras
     - get_status: Request full status update
@@ -1446,13 +1508,16 @@ async def send_edge_command(
         )
 
     # Validate camera param if setting camera
+    # CAM-CONTRACT-0: Accept both canonical and legacy camera names
     if cmd.command == "set_active_camera":
         camera = cmd.params.get("camera") if cmd.params else None
-        if not camera or camera not in VALID_CAMERAS:
+        if not camera or camera not in ALL_VALID_CAMERAS:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid camera. Valid cameras: {', '.join(VALID_CAMERAS)}"
+                detail=f"Invalid camera. Valid cameras: {', '.join(sorted(VALID_CAMERAS))}"
             )
+        # Normalize to canonical name for downstream processing
+        cmd.params["camera"] = normalize_camera_slot(camera)
 
     # STREAM-3: Validate profile param if setting stream profile
     if cmd.command == "set_stream_profile":
@@ -1939,9 +2004,18 @@ async def get_featured_camera(
     if state.get("status") == "pending" and state.get("timeout_at"):
         if now_ms > state["timeout_at"]:
             state["status"] = "timeout"
-            state["last_error"] = "Edge did not respond within timeout"
+            rid = state.get("request_id", "unknown")
+            state["last_error"] = f"Edge did not respond within {FEATURED_CAMERA_TIMEOUT_S}s (request_id={rid})"
             state["updated_at"] = datetime.utcnow().isoformat()
             await redis_client.set_featured_camera_state(event_id, vehicle_id, state)
+            logger.warning(
+                "featured_camera_timeout",
+                event_id=event_id,
+                vehicle_id=vehicle_id,
+                request_id=rid,
+                desired_camera=state.get("desired_camera"),
+                timeout_s=FEATURED_CAMERA_TIMEOUT_S,
+            )
 
     return FeaturedCameraState(
         vehicle_id=vehicle_id,
@@ -2359,4 +2433,180 @@ async def get_event_telemetry_policies(
         event_id=event_id,
         policies=policies,
         checked_at=datetime.utcnow(),
+    )
+
+
+# ============ PIT-NOTES-1: Pit Notes from Edge to Control Room ============
+
+class PitNoteCreateRequest(BaseModel):
+    """Request to create a pit note from edge device."""
+    vehicle_id: str
+    note: str
+    timestamp_ms: Optional[int] = None  # If not provided, use server time
+
+
+class PitNoteResponse(BaseModel):
+    """Single pit note response."""
+    note_id: str
+    event_id: str
+    vehicle_id: str
+    vehicle_number: Optional[str]
+    team_name: Optional[str]
+    message: str
+    timestamp_ms: int
+    created_at: datetime
+
+
+class PitNotesListResponse(BaseModel):
+    """List of pit notes for an event."""
+    event_id: str
+    notes: list[PitNoteResponse]
+    total: int
+
+
+@events_router.post("/api/v1/events/{event_id}/pit-notes", response_model=PitNoteResponse)
+async def create_pit_note(
+    event_id: str,
+    data: PitNoteCreateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Create a pit note from edge device.
+
+    PIT-NOTES-1: Edge devices send notes to cloud for race control visibility.
+    Authenticated via X-Truck-Token header.
+    """
+    # Validate truck token
+    truck_token = request.headers.get("X-Truck-Token")
+    if not truck_token:
+        raise HTTPException(status_code=401, detail="Missing X-Truck-Token header")
+
+    # Look up token in cache or database
+    token_info = await redis_client.get_truck_token_info(truck_token)
+    if not token_info:
+        # Check database
+        result = await db.execute(
+            select(Vehicle).where(Vehicle.truck_token == truck_token)
+        )
+        vehicle = result.scalar_one_or_none()
+        if not vehicle:
+            raise HTTPException(status_code=401, detail="Invalid truck token")
+
+        # Check if vehicle is registered for this event
+        result = await db.execute(
+            select(EventVehicle).where(
+                EventVehicle.event_id == event_id,
+                EventVehicle.vehicle_id == vehicle.vehicle_id,
+            )
+        )
+        if not result.scalar_one_or_none():
+            raise HTTPException(status_code=403, detail="Vehicle not registered for this event")
+
+        vehicle_id = vehicle.vehicle_id
+        vehicle_number = vehicle.vehicle_number
+        team_name = vehicle.team_name
+        # Cache for future requests
+        await redis_client.cache_truck_token(truck_token, vehicle_id, event_id)
+    else:
+        vehicle_id = token_info["vehicle_id"]
+        if token_info.get("event_id") != event_id:
+            raise HTTPException(status_code=403, detail="Token not valid for this event")
+        # Fetch vehicle details for denormalized fields
+        result = await db.execute(
+            select(Vehicle).where(Vehicle.vehicle_id == vehicle_id)
+        )
+        vehicle = result.scalar_one_or_none()
+        vehicle_number = vehicle.vehicle_number if vehicle else None
+        team_name = vehicle.team_name if vehicle else None
+
+    # Validate note content
+    message = data.note.strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Note message cannot be empty")
+    if len(message) > 1000:
+        raise HTTPException(status_code=400, detail="Note message too long (max 1000 chars)")
+
+    # Create timestamp
+    timestamp_ms = data.timestamp_ms or int(time.time() * 1000)
+
+    # Create pit note
+    pit_note = PitNote(
+        event_id=event_id,
+        vehicle_id=vehicle_id,
+        vehicle_number=vehicle_number,
+        team_name=team_name,
+        message=message,
+        timestamp_ms=timestamp_ms,
+    )
+    db.add(pit_note)
+    await db.commit()
+    await db.refresh(pit_note)
+
+    logger.info("pit_note_created", note_id=pit_note.note_id, event_id=event_id,
+                vehicle_id=vehicle_id, vehicle_number=vehicle_number)
+
+    return PitNoteResponse(
+        note_id=pit_note.note_id,
+        event_id=pit_note.event_id,
+        vehicle_id=pit_note.vehicle_id,
+        vehicle_number=pit_note.vehicle_number,
+        team_name=pit_note.team_name,
+        message=pit_note.message,
+        timestamp_ms=pit_note.timestamp_ms,
+        created_at=pit_note.created_at,
+    )
+
+
+@events_router.get("/api/v1/events/{event_id}/pit-notes", response_model=PitNotesListResponse)
+async def get_pit_notes(
+    event_id: str,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_session),
+):
+    """
+    Get pit notes for an event.
+
+    PIT-NOTES-1: Control room fetches notes for display.
+    Public endpoint (no auth required) - notes are not sensitive.
+    """
+    # Validate event exists
+    result = await db.execute(select(Event).where(Event.event_id == event_id))
+    event = result.scalar_one_or_none()
+    if not event:
+        raise HTTPException(status_code=404, detail="Event not found")
+
+    # Fetch notes, newest first
+    limit = min(limit, 100)  # Cap at 100
+    result = await db.execute(
+        select(PitNote)
+        .where(PitNote.event_id == event_id)
+        .order_by(PitNote.timestamp_ms.desc())
+        .limit(limit)
+    )
+    notes = result.scalars().all()
+
+    # Get total count
+    from sqlalchemy import func
+    count_result = await db.execute(
+        select(func.count()).select_from(PitNote).where(PitNote.event_id == event_id)
+    )
+    total = count_result.scalar() or 0
+
+    return PitNotesListResponse(
+        event_id=event_id,
+        notes=[
+            PitNoteResponse(
+                note_id=n.note_id,
+                event_id=n.event_id,
+                vehicle_id=n.vehicle_id,
+                vehicle_number=n.vehicle_number,
+                team_name=n.team_name,
+                message=n.message,
+                timestamp_ms=n.timestamp_ms,
+                created_at=n.created_at,
+            )
+            for n in notes
+        ],
+        total=total,
     )
