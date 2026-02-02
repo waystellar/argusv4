@@ -73,6 +73,7 @@ class BroadcastStateResponse(BaseModel):
     featured_vehicle_id: Optional[str]
     featured_camera: Optional[str]
     active_feeds: list[dict]
+    edge_youtube_url: Optional[str] = None  # Fallback YouTube URL from edge heartbeat
     updated_at: datetime
 
 
@@ -87,6 +88,7 @@ class CameraFeedResponse(BaseModel):
     type: str = "youtube"
     featured: bool = False
     is_live: bool
+    device_status: str = "unknown"  # online, offline, unknown — from edge heartbeat camera device
 
 
 class TruckStatusResponse(BaseModel):
@@ -292,7 +294,7 @@ async def get_broadcast_state(
     # Get broadcast state from Redis
     state = await redis_client.get_json(f"broadcast:{event_id}")
 
-    # Get all active video feeds
+    # Get all active video feeds from database
     result = await db.execute(
         select(VideoFeed, Vehicle)
         .join(Vehicle, VideoFeed.vehicle_id == Vehicle.vehicle_id)
@@ -312,11 +314,46 @@ async def get_broadcast_state(
         for row in result.all()
     ]
 
+    # Fallback: if the featured vehicle has no DB feed but the edge heartbeat
+    # reports a youtube_url, synthesize a feed entry so the On Air section
+    # can show the stream.  This covers the case where the team configured
+    # the YouTube URL on the edge device but not via the Team Dashboard.
+    featured_vid = state.get("featured_vehicle_id") if state else None
+    featured_cam = state.get("featured_camera") if state else None
+    edge_youtube_url_value: Optional[str] = None
+
+    if featured_vid:
+        edge_statuses = await redis_client.get_all_edge_statuses(event_id)
+        edge_status = edge_statuses.get(featured_vid, {})
+        edge_yt = edge_status.get("youtube_url", "")
+        if edge_yt:
+            edge_youtube_url_value = edge_yt
+
+        if featured_cam:
+            has_db_feed = any(
+                f["vehicle_id"] == featured_vid and f["camera_name"] == featured_cam
+                for f in feeds
+            )
+            if not has_db_feed and edge_yt:
+                # Look up vehicle info
+                veh_result = await db.execute(
+                    select(Vehicle).where(Vehicle.vehicle_id == featured_vid)
+                )
+                vehicle = veh_result.scalar_one_or_none()
+                feeds.append({
+                    "vehicle_id": featured_vid,
+                    "vehicle_number": vehicle.vehicle_number if vehicle else "?",
+                    "team_name": vehicle.team_name if vehicle else "Unknown",
+                    "camera_name": featured_cam,
+                    "youtube_url": edge_yt,
+                })
+
     return BroadcastStateResponse(
         event_id=event_id,
-        featured_vehicle_id=state.get("featured_vehicle_id") if state else None,
-        featured_camera=state.get("featured_camera") if state else None,
+        featured_vehicle_id=featured_vid,
+        featured_camera=featured_cam,
         active_feeds=feeds,
+        edge_youtube_url=edge_youtube_url_value,
         updated_at=datetime.utcnow(),
     )
 
@@ -710,6 +747,36 @@ async def list_available_cameras(
     # TEAM-2: Collect featured camera state per vehicle for 'featured' indicator
     featured_cameras: dict[str, str] = {}  # vehicle_id -> featured camera_name
 
+    # Pre-fetch edge statuses from Redis (used by both Source 1 and Source 2)
+    # Get all event vehicles first (needed for edge lookups and placeholders)
+    result = await db.execute(
+        select(EventVehicle, Vehicle)
+        .join(Vehicle, EventVehicle.vehicle_id == Vehicle.vehicle_id)
+        .where(
+            EventVehicle.event_id == event_id,
+            EventVehicle.visible == True,
+        )
+    )
+    event_vehicles = result.all()
+
+    edge_statuses = await redis_client.get_all_edge_statuses(event_id)
+
+    # Helper: look up device_status for a camera from edge heartbeat data
+    def _device_status(vehicle_id: str, camera_name: str) -> str:
+        edge = edge_statuses.get(vehicle_id, {})
+        for cam in edge.get("cameras", []):
+            if cam.get("name") == camera_name:
+                s = cam.get("status", "unknown")
+                if s in ("online", "available", "active"):
+                    return "online"
+                if s in ("offline", "error"):
+                    return "offline"
+                return s
+        # No edge camera entry — check if edge heartbeat exists at all
+        if edge.get("heartbeat_ts"):
+            return "offline"  # Edge is reporting but camera not listed
+        return "unknown"
+
     # Source 1: Get configured video feeds from database
     result = await db.execute(
         select(VideoFeed, Vehicle, EventVehicle)
@@ -727,34 +794,23 @@ async def list_available_cameras(
 
     for row in result.all():
         vid = row.VideoFeed.vehicle_id
-        key = (vid, row.VideoFeed.camera_name)
+        cam_name = row.VideoFeed.camera_name
+        key = (vid, cam_name)
         seen_cameras.add(key)
         url = row.VideoFeed.youtube_url
         feeds.append(CameraFeedResponse(
             vehicle_id=vid,
             vehicle_number=row.Vehicle.vehicle_number,
             team_name=row.Vehicle.team_name,
-            camera_name=row.VideoFeed.camera_name,
+            camera_name=cam_name,
             youtube_url=url,
             embed_url=_youtube_embed_url(url),
             is_live=bool(url),
+            device_status=_device_status(vid, cam_name),
         ))
 
     # Source 2: Get edge-reported cameras that don't have VideoFeed records
     # This allows cameras to appear in grid before teams configure feeds
-    result = await db.execute(
-        select(EventVehicle, Vehicle)
-        .join(Vehicle, EventVehicle.vehicle_id == Vehicle.vehicle_id)
-        .where(
-            EventVehicle.event_id == event_id,
-            EventVehicle.visible == True,
-        )
-    )
-    event_vehicles = result.all()
-
-    # Get all edge statuses from Redis
-    edge_statuses = await redis_client.get_all_edge_statuses(event_id)
-
     for row in event_vehicles:
         vehicle = row.Vehicle
         edge_status = edge_statuses.get(vehicle.vehicle_id, {})
@@ -773,7 +829,7 @@ async def list_available_cameras(
             if key in seen_cameras:
                 continue
 
-            # Determine if this camera is live
+            # Determine if this camera is live (streaming to YouTube)
             is_live = (
                 streaming_status == "live" and
                 streaming_camera == cam_name and
@@ -790,6 +846,7 @@ async def list_available_cameras(
                 youtube_url=cam_url,
                 embed_url=_youtube_embed_url(cam_url),
                 is_live=is_live,
+                device_status=_device_status(vehicle.vehicle_id, cam_name),
             ))
 
     # TEAM-2: Look up featured camera state per vehicle and mark feeds
@@ -822,6 +879,7 @@ async def list_available_cameras(
                     youtube_url="",
                     embed_url="",
                     is_live=False,
+                    device_status=_device_status(vehicle.vehicle_id, cam_name),
                     featured=featured_cameras.get(vehicle.vehicle_id) == cam_name,
                 ))
 

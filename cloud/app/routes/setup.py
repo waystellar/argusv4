@@ -472,14 +472,23 @@ async def setup_wizard(request: Request):
 
                 <div id="password-error" style="display: none; color: #ef4444; margin-bottom: 12px; font-size: 0.875rem;"></div>
 
-                <div class="form-group" id="db-settings" style="display: none;">
-                    <label for="database_url">PostgreSQL Connection URL</label>
-                    <input type="text" id="database_url" placeholder="postgresql+asyncpg://user:pass@host:5432/argus">
-                </div>
-
-                <div class="form-group" id="redis-settings" style="display: none;">
-                    <label for="redis_url">Redis URL</label>
-                    <input type="text" id="redis_url" placeholder="redis://localhost:6379">
+                <div id="advanced-toggle" style="display: none;">
+                    <button type="button" class="btn-secondary" style="width: auto; padding: 8px 16px; font-size: 0.75rem; margin-bottom: 12px;" onclick="toggleAdvanced()">
+                        <span id="advanced-arrow">&#9654;</span> Advanced: Override Database / Redis URLs
+                    </button>
+                    <div id="advanced-fields" style="display: none;">
+                        <div class="info-box">
+                            Leave blank to use the Docker container defaults set by the installer.
+                        </div>
+                        <div class="form-group" id="db-settings">
+                            <label for="database_url">PostgreSQL Connection URL (optional)</label>
+                            <input type="text" id="database_url" placeholder="Leave blank to use installer defaults">
+                        </div>
+                        <div class="form-group" id="redis-settings">
+                            <label for="redis_url">Redis URL (optional)</label>
+                            <input type="text" id="redis_url" placeholder="Leave blank to use installer defaults">
+                        </div>
+                    </div>
                 </div>
 
                 <div class="button-group">
@@ -584,15 +593,26 @@ async def setup_wizard(request: Request):
             el.classList.add('selected');
             config.deployment_mode = mode;
 
-            // Show/hide database settings
-            const dbSettings = document.getElementById('db-settings');
-            const redisSettings = document.getElementById('redis-settings');
+            // Show/hide advanced toggle (DB/Redis override behind toggle)
+            const advancedToggle = document.getElementById('advanced-toggle');
             if (mode === 'production') {{
-                dbSettings.style.display = 'block';
-                redisSettings.style.display = 'block';
+                advancedToggle.style.display = 'block';
             }} else {{
-                dbSettings.style.display = 'none';
-                redisSettings.style.display = 'none';
+                advancedToggle.style.display = 'none';
+                document.getElementById('advanced-fields').style.display = 'none';
+                document.getElementById('advanced-arrow').innerHTML = '&#9654;';
+            }}
+        }}
+
+        function toggleAdvanced() {{
+            const fields = document.getElementById('advanced-fields');
+            const arrow = document.getElementById('advanced-arrow');
+            if (fields.style.display === 'none') {{
+                fields.style.display = 'block';
+                arrow.innerHTML = '&#9660;';
+            }} else {{
+                fields.style.display = 'none';
+                arrow.innerHTML = '&#9654;';
             }}
         }}
 

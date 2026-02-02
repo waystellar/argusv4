@@ -197,6 +197,7 @@ class LeaderboardEntry(BaseModel):
     last_checkpoint_name: Optional[str]
     delta_to_leader_ms: int
     delta_formatted: str
+    lap_number: Optional[int] = None  # TEL-DEFAULTS: current lap
     progress_miles: Optional[float] = None  # PROGRESS-1: distance along course
     miles_remaining: Optional[float] = None  # PROGRESS-1: distance to finish
 

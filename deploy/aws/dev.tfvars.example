@@ -2,10 +2,11 @@
 # Copy to dev.tfvars and fill in values
 
 # General
-project_name = "argus"
-environment  = "dev"
-aws_region   = "us-west-2"
-domain_name  = ""  # Not needed for dev
+project_name    = "argus"
+environment     = "dev"
+aws_region      = "us-west-2"
+domain_name     = ""  # Not needed for dev
+deployment_tier = ""  # No preset for dev — individual values below apply
 
 # Database
 db_name     = "argus"

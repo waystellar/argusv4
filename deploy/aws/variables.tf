@@ -19,6 +19,25 @@ variable "environment" {
   }
 }
 
+variable "deployment_tier" {
+  description = <<-EOT
+    Deployment tier controlling resource sizing presets.
+      "tier1" — Shared SaaS stack (~5k fans, cost-optimized)
+      "tier2" — Dedicated event stack (~30k+ fans, high concurrency)
+      ""      — No preset; use individual variable values (default, backwards compatible)
+    When set, tier presets override: ECS min/max/desired/cpu/memory, RDS class/storage,
+    Redis node type, CloudFront price class, and Gunicorn workers. Individual variables
+    are still used for anything the tier does not cover.
+  EOT
+  type        = string
+  default     = ""
+
+  validation {
+    condition     = contains(["", "tier1", "tier2"], var.deployment_tier)
+    error_message = "deployment_tier must be \"\", \"tier1\", or \"tier2\"."
+  }
+}
+
 variable "aws_region" {
   description = "AWS region for deployment"
   type        = string

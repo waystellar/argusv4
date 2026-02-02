@@ -283,6 +283,7 @@ async def calculate_leaderboard(
                 last_checkpoint_name=cp_display,
                 delta_to_leader_ms=delta_ms,
                 delta_formatted=format_time_delta(delta_ms),
+                lap_number=crossing.lap_number,
                 progress_miles=pos.get("progress_miles"),
                 miles_remaining=pos.get("miles_remaining"),
             )

@@ -99,6 +99,29 @@ output "web_bucket_arn" {
   value       = aws_s3_bucket.web.arn
 }
 
+# ============ Deployment Tier ============
+
+output "deployment_tier" {
+  description = "Active deployment tier (empty string = no preset, using individual variables)"
+  value       = var.deployment_tier
+}
+
+output "effective_sizing" {
+  description = "Resolved resource sizing (from tier preset or individual variables)"
+  value = {
+    ecs_cpu           = local.effective_ecs_cpu
+    ecs_memory        = local.effective_ecs_memory
+    ecs_min_count     = local.effective_ecs_min_count
+    ecs_max_count     = local.effective_ecs_max_count
+    ecs_desired_count = local.effective_ecs_desired_count
+    rds_instance_class = local.effective_rds_instance_class
+    rds_storage        = "${local.effective_rds_allocated_storage}–${local.effective_rds_max_storage} GB"
+    redis_node_type    = local.effective_redis_node_type
+    cf_price_class     = local.effective_cf_price_class
+    gunicorn_workers   = local.effective_gunicorn_workers
+  }
+}
+
 # ============ URLs ============
 
 output "api_url" {

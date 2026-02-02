@@ -2,10 +2,13 @@
 # Copy to prod.tfvars and fill in values
 
 # General
-project_name = "argus"
-environment  = "prod"
-aws_region   = "us-west-2"
-domain_name  = "administrativeresults.com"
+project_name    = "argus"
+environment     = "prod"
+aws_region      = "us-west-2"
+domain_name     = "administrativeresults.com"
+# deployment_tier: set to "tier1" (~5k fans, cost-optimized) or "tier2" (~30k+ fans, high concurrency).
+# When set, overrides ECS/RDS/Redis/CloudFront sizing below. Leave "" to use individual values.
+deployment_tier = "tier1"
 
 # Database (CHANGE THESE!)
 db_name     = "argus"

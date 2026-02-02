@@ -37,6 +37,7 @@ async def event_generator(
     request: Request,
     event_id: str,
     viewer_access: str,
+    last_event_id: Optional[int] = None,
 ):
     """
     Generator that yields SSE events for a given race event.
@@ -46,10 +47,14 @@ async def event_generator(
     The previous implementation received db session from endpoint, which would
     be closed by FastAPI while the generator was still running.
 
+    Gap 3: Supports Last-Event-ID replay. If last_event_id is provided,
+    replays buffered events before switching to live pub/sub.
+
     Args:
         request: FastAPI request object
         event_id: Event ID to stream
         viewer_access: "public", "premium", or "team"
+        last_event_id: Last received SSE event ID for replay (Gap 3)
     """
     # Send initial connected event
     yield {
@@ -64,27 +69,55 @@ async def event_generator(
     # FIXED: Create dedicated session for this generator's lifetime
     # This session will remain valid for the entire SSE connection
     async with get_session_context() as db:
-        # Send current positions as snapshot (filtered by permissions)
-        positions = await redis_client.get_latest_positions(event_id)
-        hidden = await redis_client.get_visible_vehicles(event_id)
+        # Gap 3: If reconnecting with Last-Event-ID, try replay before snapshot
+        replayed = False
+        if last_event_id is not None:
+            replay_events = await redis_client.get_replay_events(event_id, last_event_id)
+            if replay_events:
+                # Replay missed events with their original IDs
+                for entry in replay_events:
+                    event_data = entry["data"]
+                    event_type = entry["type"]
 
-        visible_positions = []
-        for vid, pos in positions.items():
-            if vid in hidden:
-                continue
-            # Apply field-level filtering
-            filtered_pos = await filter_position_for_viewer(
-                {**pos, "vehicle_id": vid},
-                event_id,
-                viewer_access,
-                db,
-            )
-            visible_positions.append(filtered_pos)
+                    # Apply same filtering as live events
+                    if event_type == "position":
+                        hidden = await redis_client.get_visible_vehicles(event_id)
+                        vid = event_data.get("vehicle_id")
+                        if vid in hidden:
+                            continue
+                        event_data = await filter_position_for_viewer(
+                            event_data, event_id, viewer_access, db,
+                        )
 
-        yield {
-            "event": "snapshot",
-            "data": json.dumps({"vehicles": visible_positions}),
-        }
+                    yield {
+                        "event": event_type,
+                        "data": json.dumps(event_data),
+                        "id": str(entry["seq"]),
+                    }
+                replayed = True
+
+        if not replayed:
+            # Send current positions as snapshot (filtered by permissions)
+            positions = await redis_client.get_latest_positions(event_id)
+            hidden = await redis_client.get_visible_vehicles(event_id)
+
+            visible_positions = []
+            for vid, pos in positions.items():
+                if vid in hidden:
+                    continue
+                # Apply field-level filtering
+                filtered_pos = await filter_position_for_viewer(
+                    {**pos, "vehicle_id": vid},
+                    event_id,
+                    viewer_access,
+                    db,
+                )
+                visible_positions.append(filtered_pos)
+
+            yield {
+                "event": "snapshot",
+                "data": json.dumps({"vehicles": visible_positions}),
+            }
 
         # Subscribe to Redis channel
         async with redis_client.subscribe_to_event(event_id) as pubsub:
@@ -114,6 +147,8 @@ async def event_generator(
                         data = json.loads(message["data"])
                         event_type = data.get("type", "message")
                         event_data = data.get("data", {})
+                        # Gap 3: Extract sequence ID from published message
+                        seq_id = data.get("seq")
 
                         # Handle visibility update events - refresh hidden cache immediately
                         if event_type == "permission":
@@ -133,10 +168,14 @@ async def event_generator(
                                 db,
                             )
 
-                        yield {
+                        sse_event = {
                             "event": event_type,
                             "data": json.dumps(event_data),
                         }
+                        # Gap 3: Include event ID for Last-Event-ID tracking
+                        if seq_id is not None:
+                            sse_event["id"] = str(seq_id)
+                        yield sse_event
                     else:
                         # PR-2 UX: Send heartbeat event with server timestamp
                         # Allows frontend to track latency and connection health
@@ -169,6 +208,7 @@ async def stream_event(
     event_id: str,
     request: Request,
     db: AsyncSession = Depends(get_session),
+    lastEventId: Optional[str] = None,
 ):
     """
     SSE endpoint for real-time event updates.
@@ -187,6 +227,10 @@ async def stream_event(
     - permission: Vehicle visibility changed
     - heartbeat: Server timestamp for latency tracking (PR-2 UX)
 
+    Gap 3: Supports Last-Event-ID for replay on reconnect.
+    Pass ?lastEventId=<id> to replay missed events instead of full snapshot.
+    Also reads the standard Last-Event-ID header set by EventSource API.
+
     Telemetry fields are filtered based on team permission settings:
     - public: GPS position, speed, heading, RPM, gear
     - premium: + throttle, coolant temp
@@ -202,9 +246,18 @@ async def stream_event(
     # PR-1 SECURITY FIX: Compute access level from auth headers, NOT query param
     viewer_access = await get_viewer_access(event_id, request, db)
 
+    # Gap 3: Resolve Last-Event-ID from query param or standard header
+    last_event_id: Optional[int] = None
+    raw_id = lastEventId or request.headers.get("last-event-id")
+    if raw_id:
+        try:
+            last_event_id = int(raw_id)
+        except (ValueError, TypeError):
+            pass  # Invalid ID, fall through to full snapshot
+
     # FIXED: Don't pass db to generator - it creates its own session
     return EventSourceResponse(
-        event_generator(request, event_id, viewer_access),
+        event_generator(request, event_id, viewer_access, last_event_id=last_event_id),
         headers={
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",  # Disable nginx buffering

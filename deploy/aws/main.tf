@@ -54,6 +54,43 @@ data "aws_availability_zones" "available" {
 
 data "aws_caller_identity" "current" {}
 
+# ============ Tier-Aware Defaults ============
+#
+# When deployment_tier is "" (default), every effective_* value falls through
+# to the corresponding var.*, preserving backwards compatibility.
+# When "tier1" or "tier2" is set, the preset overrides the variable defaults.
+
+locals {
+  is_tier1 = var.deployment_tier == "tier1"
+  is_tier2 = var.deployment_tier == "tier2"
+
+  # ---- RDS ----
+  effective_rds_instance_class    = local.is_tier2 ? "db.t3.medium" : local.is_tier1 ? "db.t3.micro" : var.rds_instance_class
+  effective_rds_allocated_storage = local.is_tier2 ? 50             : local.is_tier1 ? 20            : var.rds_allocated_storage
+  effective_rds_max_storage       = local.is_tier2 ? 500            : local.is_tier1 ? 100           : var.rds_max_storage
+
+  # ---- Redis ----
+  effective_redis_node_type = local.is_tier2 ? "cache.t3.medium" : local.is_tier1 ? "cache.t3.micro" : var.redis_node_type
+
+  # ---- ECS task sizing ----
+  effective_ecs_cpu    = local.is_tier2 ? 2048 : local.is_tier1 ? 512  : var.ecs_cpu
+  effective_ecs_memory = local.is_tier2 ? 4096 : local.is_tier1 ? 1024 : var.ecs_memory
+
+  # ---- ECS autoscaling bounds ----
+  effective_ecs_desired_count = local.is_tier2 ? 4  : local.is_tier1 ? 2 : var.ecs_desired_count
+  effective_ecs_min_count     = local.is_tier2 ? 2  : local.is_tier1 ? 1 : var.ecs_min_count
+  effective_ecs_max_count     = local.is_tier2 ? 40 : local.is_tier1 ? 6 : var.ecs_max_count
+
+  # ---- Gunicorn ----
+  effective_gunicorn_workers = local.is_tier2 ? 8 : local.is_tier1 ? 2 : var.gunicorn_workers
+
+  # ---- CloudFront ----
+  # Tier 1: PriceClass_100 (US/Canada/Europe — lowest cost)
+  # Tier 2: PriceClass_200 (adds Asia, Middle East, Africa)
+  # No tier: PriceClass_100 (existing default)
+  effective_cf_price_class = local.is_tier2 ? "PriceClass_200" : "PriceClass_100"
+}
+
 # ============ VPC ============
 
 module "vpc" {
@@ -196,9 +233,9 @@ resource "aws_db_instance" "main" {
 
   engine               = "postgres"
   engine_version       = "15.4"
-  instance_class       = var.rds_instance_class
-  allocated_storage    = var.rds_allocated_storage
-  max_allocated_storage = var.rds_max_storage
+  instance_class       = local.effective_rds_instance_class
+  allocated_storage    = local.effective_rds_allocated_storage
+  max_allocated_storage = local.effective_rds_max_storage
   storage_type         = "gp3"
   storage_encrypted    = true
 
@@ -242,7 +279,7 @@ resource "aws_elasticache_cluster" "main" {
   cluster_id           = "${var.project_name}-${var.environment}"
   engine               = "redis"
   engine_version       = "7.0"
-  node_type            = var.redis_node_type
+  node_type            = local.effective_redis_node_type
   num_cache_nodes      = 1
   parameter_group_name = "default.redis7"
   port                 = 6379
@@ -265,7 +302,7 @@ resource "aws_ecs_cluster" "main" {
 
   setting {
     name  = "containerInsights"
-    value = var.environment == "prod" ? "enabled" : "disabled"
+    value = (var.environment == "prod" || local.is_tier2) ? "enabled" : "disabled"
   }
 
   tags = {
@@ -379,8 +416,8 @@ resource "aws_ecs_task_definition" "api" {
   family                   = "${var.project_name}-${var.environment}-api"
   requires_compatibilities = ["FARGATE"]
   network_mode             = "awsvpc"
-  cpu                      = var.ecs_cpu
-  memory                   = var.ecs_memory
+  cpu                      = local.effective_ecs_cpu
+  memory                   = local.effective_ecs_memory
   execution_role_arn       = aws_iam_role.ecs_task_execution.arn
   task_role_arn           = aws_iam_role.ecs_task.arn
 
@@ -402,7 +439,7 @@ resource "aws_ecs_task_definition" "api" {
         { name = "DATABASE_URL", value = "postgresql+asyncpg://${var.db_username}:${var.db_password}@${aws_db_instance.main.endpoint}/${var.db_name}" },
         { name = "REDIS_URL", value = "redis://${aws_elasticache_cluster.main.cache_nodes[0].address}:6379" },
         { name = "SSE_KEEPALIVE_S", value = "30" },
-        { name = "WORKERS", value = tostring(var.gunicorn_workers) },
+        { name = "WORKERS", value = tostring(local.effective_gunicorn_workers) },
       ]
 
       secrets = [
@@ -530,7 +567,7 @@ resource "aws_ecs_service" "api" {
   name            = "${var.project_name}-${var.environment}-api"
   cluster         = aws_ecs_cluster.main.id
   task_definition = aws_ecs_task_definition.api.arn
-  desired_count   = var.ecs_desired_count
+  desired_count   = local.effective_ecs_desired_count
   launch_type     = "FARGATE"
 
   network_configuration {
@@ -566,8 +603,8 @@ resource "aws_ecs_service" "api" {
 # ============ Auto Scaling ============
 
 resource "aws_appautoscaling_target" "ecs" {
-  max_capacity       = var.ecs_max_count
-  min_capacity       = var.ecs_min_count
+  max_capacity       = local.effective_ecs_max_count
+  min_capacity       = local.effective_ecs_min_count
   resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.api.name}"
   scalable_dimension = "ecs:service:DesiredCount"
   service_namespace  = "ecs"
@@ -631,7 +668,7 @@ resource "aws_cloudfront_distribution" "web" {
   enabled             = true
   is_ipv6_enabled     = true
   default_root_object = "index.html"
-  price_class         = "PriceClass_100"  # US, Canada, Europe only
+  price_class         = local.effective_cf_price_class
   aliases             = var.environment == "prod" ? [var.domain_name] : []
 
   origin {

@@ -65,11 +65,16 @@ async def get_latest_position(event_id: str, vehicle_id: str) -> Optional[dict]:
 # ============ Pub/Sub for SSE ============
 
 async def publish_event(event_id: str, event_type: str, data: dict) -> None:
-    """Publish event to Redis channel for SSE fan-out."""
+    """Publish event to Redis channel for SSE fan-out and buffer for replay."""
     r = await get_redis()
     channel = f"stream:{event_id}"
-    message = json.dumps({"type": event_type, "data": data})
+    # Gap 3: Assign a global sequence ID for Last-Event-ID replay
+    seq_id = await incr_sse_seq(event_id)
+    message = json.dumps({"type": event_type, "data": data, "seq": seq_id})
     await r.publish(channel, message)
+    # Buffer for replay (non-heartbeat events only)
+    if event_type != "heartbeat":
+        await buffer_sse_event(event_id, seq_id, event_type, data)
 
 
 @asynccontextmanager
@@ -599,3 +604,48 @@ async def get_all_vehicle_policies(event_id: str) -> dict[str, dict]:
             policies[vehicle_id] = json.loads(data)
 
     return policies
+
+
+# ============ Gap 3: SSE Replay Buffer ============
+
+SSE_REPLAY_BUFFER_SIZE = 500  # Keep last 500 events per event
+
+
+async def incr_sse_seq(event_id: str) -> int:
+    """Increment and return the global SSE sequence counter for an event."""
+    r = await get_redis()
+    key = f"sse_seq:{event_id}"
+    seq = await r.incr(key)
+    await r.expire(key, 7200)  # 2 hour TTL
+    return seq
+
+
+async def buffer_sse_event(event_id: str, seq_id: int, event_type: str, data: dict) -> None:
+    """
+    Buffer an SSE event for replay on reconnect.
+    Maintains a capped list of the last SSE_REPLAY_BUFFER_SIZE events.
+    """
+    r = await get_redis()
+    key = f"sse_replay:{event_id}"
+    entry = json.dumps({"seq": seq_id, "type": event_type, "data": data})
+    await r.rpush(key, entry)
+    await r.ltrim(key, -SSE_REPLAY_BUFFER_SIZE, -1)
+    await r.expire(key, 7200)  # 2 hour TTL
+
+
+async def get_replay_events(event_id: str, after_seq: int) -> list[dict]:
+    """
+    Get buffered SSE events with sequence ID > after_seq.
+    Returns list of {seq, type, data} dicts in order.
+    If after_seq is too old (not in buffer), returns empty list
+    and caller should fall back to a full snapshot.
+    """
+    r = await get_redis()
+    key = f"sse_replay:{event_id}"
+    raw_entries = await r.lrange(key, 0, -1)
+    events = []
+    for raw in raw_entries:
+        entry = json.loads(raw)
+        if entry["seq"] > after_seq:
+            events.append(entry)
+    return events
