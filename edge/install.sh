@@ -71,6 +71,7 @@ cleanup_prior_installation() {
         "argus-ant"
         "argus-dashboard"
         "argus-video"
+        "argus-cloudflared"
     )
 
     for service in "${services[@]}"; do
@@ -91,6 +92,9 @@ cleanup_prior_installation() {
 
     # Remove config directory (includes .provisioned flag and config.env)
     rm -rf "$CONFIG_DIR"
+
+    # Remove cloudflared config (tunnel config written by setup wizard)
+    rm -rf /etc/cloudflared
 
     # Remove application directories but preserve user home if it exists
     if [[ -d "$ARGUS_HOME" ]]; then
@@ -128,6 +132,39 @@ install_system_deps() {
         git
 
     log_success "System dependencies installed"
+}
+
+install_cloudflared() {
+    log_info "Installing cloudflared for Cloudflare Tunnel..."
+
+    # Pin to a known-good version for reproducible installs
+    local CF_VERSION="2024.12.2"
+    local ARCH
+    ARCH="$(dpkg --print-architecture 2>/dev/null || echo amd64)"
+
+    # Prefer Cloudflare's apt repo (auto-updates), fall back to pinned binary
+    if curl -fsSL https://pkg.cloudflare.com/cloudflare-main.gpg \
+            | gpg --dearmor -o /usr/share/keyrings/cloudflare-main.gpg 2>/dev/null; then
+        echo "deb [signed-by=/usr/share/keyrings/cloudflare-main.gpg] https://pkg.cloudflare.com/cloudflared $(lsb_release -cs 2>/dev/null || echo noble) main" \
+            > /etc/apt/sources.list.d/cloudflared.list
+        apt-get update -qq
+        if apt-get install -y -qq cloudflared; then
+            log_success "cloudflared installed via apt"
+            return 0
+        fi
+        log_warn "apt install failed, falling back to binary..."
+    fi
+
+    # Fallback: pinned binary download
+    local DL_URL="https://github.com/cloudflare/cloudflared/releases/download/${CF_VERSION}/cloudflared-linux-${ARCH}"
+    if curl -fsSL -o /usr/local/bin/cloudflared "$DL_URL"; then
+        chmod +x /usr/local/bin/cloudflared
+        log_success "cloudflared ${CF_VERSION} installed (binary)"
+    else
+        log_error "Failed to install cloudflared — Cloudflare Tunnel will not work"
+        log_error "Install manually: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/"
+        INSTALL_HAD_ERRORS=true
+    fi
 }
 
 create_user() {
@@ -1088,7 +1125,7 @@ def status():
 
     # Check service statuses with more detail
     services = {}
-    for service in ['argus-gps', 'argus-can-setup', 'argus-can', 'argus-uplink', 'argus-ant', 'argus-dashboard', 'argus-video']:
+    for service in ['argus-gps', 'argus-can-setup', 'argus-can', 'argus-uplink', 'argus-ant', 'argus-dashboard', 'argus-video', 'argus-cloudflared']:
         try:
             # Get active status
             active_result = subprocess.run(
@@ -1172,7 +1209,7 @@ def diagnose():
     diag['sudo_check'] = {'ok': sudo_ok, 'message': sudo_msg}
 
     # Check service statuses
-    for service in ['argus-provision', 'argus-gps', 'argus-can-setup', 'argus-can', 'argus-uplink', 'argus-ant', 'argus-dashboard', 'argus-video']:
+    for service in ['argus-provision', 'argus-gps', 'argus-can-setup', 'argus-can', 'argus-uplink', 'argus-ant', 'argus-dashboard', 'argus-video', 'argus-cloudflared']:
         try:
             result = subprocess.run(
                 ['systemctl', 'is-active', service],
@@ -1303,6 +1340,9 @@ argus ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop argus-*
 argus ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart argus-*
 argus ALL=(ALL) NOPASSWD: /usr/bin/systemctl status argus-*
 argus ALL=(ALL) NOPASSWD: /usr/bin/journalctl -u argus-*
+argus ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /etc/cloudflared
+argus ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/cloudflared/config.yml
+argus ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
 EOF
 
 chmod 0440 "$SUDOERS_FILE"
@@ -1427,11 +1467,24 @@ fi
 echo ""
 
 echo "Services:"
-for service in argus-provision argus-gps argus-can-setup argus-can argus-uplink argus-ant argus-dashboard argus-video; do
+for service in argus-provision argus-gps argus-can-setup argus-can argus-uplink argus-ant argus-dashboard argus-video argus-cloudflared; do
     active=$(systemctl is-active "$service" 2>/dev/null || echo "unknown")
     enabled=$(systemctl is-enabled "$service" 2>/dev/null || echo "unknown")
     printf "  %-20s active=%-10s enabled=%s\n" "$service" "$active" "$enabled"
 done
+echo ""
+
+echo "Cloudflare Tunnel:"
+if command -v cloudflared >/dev/null 2>&1; then
+    echo "  ✓ cloudflared installed ($(cloudflared --version 2>&1 | head -1))"
+else
+    echo "  ✗ cloudflared NOT installed"
+fi
+if [[ -f /etc/cloudflared/config.yml ]]; then
+    echo "  ✓ Tunnel config exists"
+else
+    echo "  ○ No tunnel config (set via Pit Crew Dashboard setup)"
+fi
 echo ""
 
 echo "Key Files:"
@@ -1799,6 +1852,9 @@ Description=Argus Uplink Service
 After=network-online.target argus-gps.service argus-can.service argus-ant.service
 Wants=network-online.target argus-gps.service argus-can.service argus-ant.service
 ConditionPathExists=/etc/argus/.provisioned
+# CODEX-P0-2: If service crashes 3 times in 60s, stop trying (matches GPS/CAN/ANT pattern)
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -1806,7 +1862,7 @@ User=${ARGUS_USER}
 WorkingDirectory=${ARGUS_HOME}
 EnvironmentFile=${CONFIG_FILE}
 ExecStart=${ARGUS_HOME}/venv/bin/python ${ARGUS_HOME}/bin/uplink_service.py
-Restart=always
+Restart=on-failure
 RestartSec=10
 
 [Install]
@@ -1920,6 +1976,36 @@ StandardError=journal
 WantedBy=multi-user.target
 EOF
 
+    # Cloudflare Tunnel Service (CGNAT-proof external access)
+    # Uses token-based auth — config is written at runtime by setup wizard
+    # when the pit crew enters their Cloudflare tunnel token.
+    cat > /etc/systemd/system/argus-cloudflared.service << EOF
+[Unit]
+Description=Argus Cloudflare Tunnel
+After=network-online.target
+Wants=network-online.target
+# Only start if tunnel config has been written by the setup wizard
+ConditionPathExists=/etc/cloudflared/config.yml
+
+[Service]
+Type=simple
+# Resolve cloudflared path — may be /usr/bin (apt) or /usr/local/bin (binary download)
+ExecStartPre=/bin/sh -c 'command -v cloudflared >/dev/null 2>&1 || test -x /usr/local/bin/cloudflared || (echo "cloudflared not installed" && exit 1)'
+ExecStart=/bin/sh -c 'exec \$(command -v cloudflared || echo /usr/local/bin/cloudflared) --no-autoupdate --config /etc/cloudflared/config.yml tunnel run'
+Restart=always
+RestartSec=10
+# Longer start limit — tunnel may take time on first auth
+StartLimitIntervalSec=300
+StartLimitBurst=5
+# Log tunnel errors for diagnostics
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=cloudflared
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
     # Reload systemd
     systemctl daemon-reload
 
@@ -2011,6 +2097,11 @@ argus ALL=(ALL) NOPASSWD: /usr/bin/systemctl status argus-*
 
 # Allow reading system logs for diagnostics
 argus ALL=(ALL) NOPASSWD: /usr/bin/journalctl -u argus-*
+
+# Allow writing Cloudflare Tunnel config (setup wizard writes /etc/cloudflared/config.yml)
+argus ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /etc/cloudflared
+argus ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/cloudflared/config.yml
+argus ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
 SUDOERS_EOF
 
     # Set correct permissions (sudoers files must be 0440)
@@ -2098,6 +2189,9 @@ argus ALL=(ALL) NOPASSWD: /usr/bin/systemctl stop argus-*
 argus ALL=(ALL) NOPASSWD: /usr/bin/systemctl restart argus-*
 argus ALL=(ALL) NOPASSWD: /usr/bin/systemctl status argus-*
 argus ALL=(ALL) NOPASSWD: /usr/bin/journalctl -u argus-*
+argus ALL=(ALL) NOPASSWD: /usr/bin/mkdir -p /etc/cloudflared
+argus ALL=(ALL) NOPASSWD: /usr/bin/tee /etc/cloudflared/config.yml
+argus ALL=(ALL) NOPASSWD: /usr/bin/systemctl daemon-reload
 SUDOERS_EOF
         chmod 0440 /etc/sudoers.d/argus
         chown root:root /etc/sudoers.d/argus
@@ -2219,6 +2313,7 @@ print_completion() {
     echo -e "  ${BLUE}Services:${NC}"
     echo "  ─────────────────────────────────────────────────"
     echo "    • argus-dashboard  - Pit crew web interface (port 8080)"
+    echo "    • argus-cloudflared - Cloudflare Tunnel (after setup)"
     echo "    • argus-gps        - GPS telemetry (when hardware available)"
     echo "    • argus-uplink     - Cloud data upload"
     echo "  ─────────────────────────────────────────────────"
@@ -2261,6 +2356,7 @@ main() {
     cleanup_prior_installation
 
     install_system_deps
+    install_cloudflared
     create_user
     create_directories
     setup_python_env

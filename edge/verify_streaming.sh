@@ -111,6 +111,59 @@ fi
 echo ""
 
 # ========================================
+# Test 3b: Check switch-camera endpoint
+# ========================================
+echo "Test 3b: POST /api/streaming/switch-camera"
+echo "-------------------------------------------"
+
+# Test missing camera field returns 400
+SWITCH_RESP=$(curl -s -w "\n%{http_code}" \
+    -H "Cookie: $SESSION_COOKIE" \
+    -H "Content-Type: application/json" \
+    -X POST -d '{}' \
+    "$DASHBOARD_URL/api/streaming/switch-camera" 2>&1)
+SWITCH_HTTP=$(echo "$SWITCH_RESP" | tail -1)
+SWITCH_BODY=$(echo "$SWITCH_RESP" | head -n -1)
+
+if [[ "$SWITCH_HTTP" == "400" ]]; then
+    pass "switch-camera rejects missing camera field (400)"
+    if echo "$SWITCH_BODY" | grep -q '"error"'; then
+        pass "Error response includes 'error' field"
+    else
+        fail "Error response missing 'error' field"
+    fi
+elif [[ "$SWITCH_HTTP" == "401" ]]; then
+    info "switch-camera requires authentication (401) — test with valid session"
+else
+    info "switch-camera empty body returned HTTP $SWITCH_HTTP"
+fi
+
+# Test valid camera field returns structured response
+SWITCH_RESP2=$(curl -s -w "\n%{http_code}" \
+    -H "Cookie: $SESSION_COOKIE" \
+    -H "Content-Type: application/json" \
+    -X POST -d '{"camera":"main"}' \
+    "$DASHBOARD_URL/api/streaming/switch-camera" 2>&1)
+SWITCH_HTTP2=$(echo "$SWITCH_RESP2" | tail -1)
+SWITCH_BODY2=$(echo "$SWITCH_RESP2" | head -n -1)
+
+if [[ "$SWITCH_HTTP2" == "200" ]] || [[ "$SWITCH_HTTP2" == "400" ]]; then
+    pass "switch-camera returns $SWITCH_HTTP2 with structured response"
+    if echo "$SWITCH_BODY2" | grep -q '"success"'; then
+        pass "Response includes 'success' field"
+    elif echo "$SWITCH_BODY2" | grep -q '"error"'; then
+        pass "Response includes 'error' field"
+    else
+        fail "Response missing 'success' or 'error' field"
+    fi
+elif [[ "$SWITCH_HTTP2" == "401" ]]; then
+    info "switch-camera requires authentication (401)"
+else
+    info "switch-camera returned HTTP $SWITCH_HTTP2"
+fi
+echo ""
+
+# ========================================
 # Test 4: Check dashboard config
 # ========================================
 echo "Test 4: Dashboard Configuration"

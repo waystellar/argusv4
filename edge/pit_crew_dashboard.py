@@ -192,6 +192,10 @@ class DashboardConfig:
     youtube_stream_key: str = ""  # Stream key for FFmpeg to push to YouTube
     youtube_live_url: str = ""    # Public URL where fans can watch the stream
 
+    # Cloudflare Tunnel (CGNAT-proof external access)
+    cloudflare_tunnel_token: str = ""  # cloudflared service token
+    cloudflare_tunnel_url: str = ""    # Public https URL via tunnel
+
     # PROGRESS-3: Leaderboard poll interval (seconds)
     leaderboard_poll_seconds: int = 60
 
@@ -226,6 +230,8 @@ class DashboardConfig:
             "port": self.port,
             "youtube_stream_key": self.youtube_stream_key,
             "youtube_live_url": self.youtube_live_url,
+            "cloudflare_tunnel_token": self.cloudflare_tunnel_token,
+            "cloudflare_tunnel_url": self.cloudflare_tunnel_url,
         }
 
         with open(path, 'w') as f:
@@ -256,6 +262,8 @@ class DashboardConfig:
                 config.port = data.get("port", 8080)
                 config.youtube_stream_key = data.get("youtube_stream_key", "")
                 config.youtube_live_url = data.get("youtube_live_url", "")
+                config.cloudflare_tunnel_token = data.get("cloudflare_tunnel_token", "")
+                config.cloudflare_tunnel_url = data.get("cloudflare_tunnel_url", "")
 
                 logger.info(f"Configuration loaded from {path}")
                 return config
@@ -276,6 +284,10 @@ class DashboardConfig:
             config.port = int(os.environ["ARGUS_PIT_PORT"])
         if os.environ.get("ARGUS_LEADERBOARD_POLL_SECONDS"):
             config.leaderboard_poll_seconds = int(os.environ["ARGUS_LEADERBOARD_POLL_SECONDS"])
+        if os.environ.get("ARGUS_CF_TUNNEL_TOKEN"):
+            config.cloudflare_tunnel_token = os.environ["ARGUS_CF_TUNNEL_TOKEN"]
+        if os.environ.get("ARGUS_CF_TUNNEL_URL"):
+            config.cloudflare_tunnel_url = os.environ["ARGUS_CF_TUNNEL_URL"]
 
         return config
 
@@ -1635,6 +1647,24 @@ DASHBOARD_HTML = '''
             transform: scale(1.02);
         }
 
+        /* STREAM-1: Prominent error banner for streaming failures */
+        .stream-error-banner {
+            margin-top: 10px;
+            padding: 12px 16px;
+            border-radius: 8px;
+            background: rgba(239, 68, 68, 0.12);
+            border: 1px solid var(--danger);
+            color: var(--text-primary);
+            font-size: 0.85rem;
+        }
+        .stream-error-banner strong { color: var(--danger); }
+        .stream-error-banner a {
+            color: var(--accent-blue);
+            text-decoration: underline;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
         /* NASCAR-Style Tachometer (Feature 2: Enhanced Telemetry) */
         /* PIT-3: 2x2 Engine Grid */
         .engine-2x2-grid {
@@ -2246,6 +2276,13 @@ DASHBOARD_HTML = '''
         Cloud connection lost - Data buffered locally
     </div>
 
+    <!-- Tunnel Not Configured Banner — persistent until Cloudflare Tunnel is set up -->
+    <div id="tunnelBanner" style="display:__TUNNEL_BANNER_DISPLAY__;background:rgba(245,158,11,0.15);border-bottom:1px solid rgba(245,158,11,0.4);color:#fcd34d;text-align:center;padding:8px 16px;font-size:0.8rem;">
+        <strong>No Cloudflare Tunnel configured.</strong>
+        Remote access is unavailable (Starlink/CGNAT blocks inbound connections).
+        <a href="/settings" style="color:#fbbf24;text-decoration:underline;margin-left:6px;">Configure in Settings</a>
+    </div>
+
     <!-- Header -->
     <div class="header">
         <h1>Pit Crew</h1>
@@ -2381,12 +2418,12 @@ DASHBOARD_HTML = '''
             <div class="grid-4">
                 <div class="gauge" id="coolantGauge">
                     <div class="label">Coolant</div>
-                    <div class="value"><span id="coolantValue">0</span>°F</div>
+                    <div class="value"><span id="coolantValue">--</span>°F</div>
                     <div class="gauge-bar"><div class="gauge-fill" id="coolantFill"></div></div>
                 </div>
                 <div class="gauge" id="oilPressGauge">
                     <div class="label">Oil PSI</div>
-                    <div class="value"><span id="oilValue">0</span></div>
+                    <div class="value"><span id="oilValue">--</span></div>
                     <div class="gauge-bar"><div class="gauge-fill" id="oilFill"></div></div>
                 </div>
                 <div class="gauge" id="oilTempGauge">
@@ -2509,6 +2546,9 @@ DASHBOARD_HTML = '''
                     <button id="stopStreamBtn" class="stream-action-btn stop" data-click="stopStream" style="display:none;">
                         Stop Stream
                     </button>
+                    <button id="switchStreamBtn" class="stream-action-btn" data-click="switchStream" style="display:none; background:var(--accent-blue, #3b82f6); color:#fff; padding:8px 16px; border-radius:6px; border:none; cursor:pointer; font-weight:600;">
+                        Switch Camera
+                    </button>
                     <!-- CAM-CONTRACT-0: Canonical 4-camera slots -->
                     <select id="streamCameraSelect" data-change-val="handleCameraSelectChange" style="padding:8px 12px; border-radius:6px; background:var(--bg-tertiary); color:var(--text-primary); border:none;">
                         <option value="main">Main Cam</option>
@@ -2518,6 +2558,17 @@ DASHBOARD_HTML = '''
                     </select>
                     <span id="streamError" style="color:var(--danger); font-size:0.8rem; display:none;"></span>
                     <span id="streamConfigWarning" style="color:var(--accent-yellow, #f0ad4e); font-size:0.8rem; display:none;">No YouTube stream key — configure in Settings</span>
+                </div>
+                <!-- STREAM-1: Prominent error banner with actionable guidance -->
+                <div id="streamErrorBanner" class="stream-error-banner" style="display:none;">
+                    <div style="display:flex; align-items:flex-start; gap:10px;">
+                        <span style="font-size:1.1rem; line-height:1;">&#9888;</span>
+                        <div style="flex:1;">
+                            <strong id="streamErrorTitle">Stream failed</strong>
+                            <div id="streamErrorMsg" style="margin-top:4px;"></div>
+                            <div id="streamErrorAction" style="margin-top:6px;"></div>
+                        </div>
+                    </div>
                 </div>
                 <div id="streamInfo" style="margin-top:8px; font-size:0.8rem; color:var(--text-muted); display:none;">
                     <span>Active Camera: <strong id="activeStreamCamera">--</strong></span>
@@ -3474,6 +3525,14 @@ DASHBOARD_HTML = '''
                     <div><span class="service-name">argus-video</span><div class="service-detail" id="svcVideoDetail"></div></div>
                     <span class="service-status" id="svcVideo">--</span>
                 </div>
+                <div class="service-item">
+                    <div><span class="service-name">Cloudflare Tunnel</span><div class="service-detail" id="svcCloudflaredDetail"></div></div>
+                    <span class="service-status" id="svcCloudflared">--</span>
+                </div>
+            </div>
+            <div id="tunnelUrlRow" style="display:none; padding: 8px 12px; margin-top: 4px; background: var(--bg-tertiary); border-radius: 6px; font-size: 0.8rem;">
+                <span style="color: var(--text-muted);">Tunnel URL:</span>
+                <a id="tunnelUrlLink" href="#" target="_blank" rel="noopener" style="color: var(--primary); margin-left: 6px;"></a>
             </div>
             <button class="send-note-btn" style="margin-top:12px;" data-click="restartAllServices">
                 Restart All Services
@@ -3772,7 +3831,7 @@ DASHBOARD_HTML = '''
                 attributionControl: false
             }).setView([33.7490, -117.8732], 10); // Default: Southern California
 
-            // PIT-2: Light topo basemap (default) with street fallback toggle
+            // EDGE-MAP-0: Basemap with automatic fallback (Topo -> Streets)
             const basemapStyles = {
                 topo: {
                     url: 'https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png',
@@ -3785,30 +3844,104 @@ DASHBOARD_HTML = '''
                     label: 'Street'
                 }
             };
+
             let currentBasemapKey = 'topo';
-            let basemapLayer = L.tileLayer(basemapStyles.topo.url, {
+            let topoAvailable = true;
+            let topoErrorCount = 0;
+            const TOPO_ERROR_THRESHOLD = 3;
+
+            // Streets layer always present underneath as safety net
+            const streetLayer = L.tileLayer(basemapStyles.street.url, {
+                maxZoom: basemapStyles.street.maxZoom
+            }).addTo(courseMap);
+
+            // Topo layer on top (covers streets when working)
+            let topoLayer = L.tileLayer(basemapStyles.topo.url, {
                 maxZoom: basemapStyles.topo.maxZoom
             }).addTo(courseMap);
+
+            // EDGE-MAP-0: Detect topo tile failures and auto-fallback
+            function showMapBanner(msg) {
+                let banner = document.getElementById('mapTileBanner');
+                if (!banner) {
+                    banner = document.createElement('div');
+                    banner.id = 'mapTileBanner';
+                    banner.style.cssText = 'position:absolute;top:8px;left:50%;transform:translateX(-50%);' +
+                        'z-index:1000;padding:6px 14px;border-radius:6px;font-size:0.75rem;font-weight:600;' +
+                        'background:rgba(245,158,11,0.95);color:#000;pointer-events:none;white-space:nowrap;';
+                    var container = document.getElementById('courseMapContainer');
+                    if (container) container.appendChild(banner);
+                }
+                banner.textContent = msg;
+                banner.style.display = '';
+            }
+
+            function hideMapBanner() {
+                var banner = document.getElementById('mapTileBanner');
+                if (banner) banner.style.display = 'none';
+            }
+
+            function fallbackToStreets() {
+                if (!topoAvailable) return;
+                topoAvailable = false;
+                courseMap.removeLayer(topoLayer);
+                currentBasemapKey = 'street';
+                showMapBanner('Topo basemap unavailable \u2014 showing Streets');
+                var btn = document.getElementById('basemapToggleBtn');
+                if (btn) {
+                    btn.textContent = 'Street';
+                    btn.title = 'Topo unavailable \u2014 showing Streets';
+                }
+                console.warn('EDGE-MAP-0: Topo tiles failed after ' + TOPO_ERROR_THRESHOLD + ' errors, fell back to Streets');
+            }
+
+            topoLayer.on('tileerror', function() {
+                topoErrorCount++;
+                if (topoErrorCount >= TOPO_ERROR_THRESHOLD) {
+                    fallbackToStreets();
+                }
+            });
 
             // Add basemap toggle control (top-right)
             const basemapToggle = L.control({ position: 'topright' });
             basemapToggle.onAdd = function() {
                 const div = L.DomUtil.create('div', 'leaflet-bar');
-                div.innerHTML = `<a href="#" id="basemapToggleBtn" title="Switch basemap" style="
-                    display:flex; align-items:center; justify-content:center;
-                    width:34px; height:34px; font-size:14px; background:white;
-                    color:#333; text-decoration:none; font-weight:bold;
-                    cursor:pointer; user-select:none;
-                ">Topo</a>`;
+                div.innerHTML = '<a href="#" id="basemapToggleBtn" title="Switch basemap" style="' +
+                    'display:flex;align-items:center;justify-content:center;' +
+                    'width:34px;height:34px;font-size:14px;background:white;' +
+                    'color:#333;text-decoration:none;font-weight:bold;' +
+                    'cursor:pointer;user-select:none;">Topo</a>';
                 L.DomEvent.disableClickPropagation(div);
                 div.querySelector('#basemapToggleBtn').addEventListener('click', function(e) {
                     e.preventDefault();
-                    currentBasemapKey = currentBasemapKey === 'topo' ? 'street' : 'topo';
-                    const style = basemapStyles[currentBasemapKey];
-                    courseMap.removeLayer(basemapLayer);
-                    basemapLayer = L.tileLayer(style.url, { maxZoom: style.maxZoom }).addTo(courseMap);
-                    this.textContent = currentBasemapKey === 'topo' ? 'Topo' : 'Street';
-                    this.title = 'Current: ' + style.label + ' (click to switch)';
+                    if (currentBasemapKey === 'topo') {
+                        // Switch to street: remove topo overlay, show streets underneath
+                        courseMap.removeLayer(topoLayer);
+                        currentBasemapKey = 'street';
+                        this.textContent = 'Street';
+                        this.title = 'Current: Street (click to switch)';
+                        hideMapBanner();
+                    } else {
+                        // Switch to topo: re-add topo overlay on top
+                        if (!topoAvailable) {
+                            // Topo previously failed — retry with fresh layer
+                            topoErrorCount = 0;
+                            topoAvailable = true;
+                        }
+                        topoLayer = L.tileLayer(basemapStyles.topo.url, {
+                            maxZoom: basemapStyles.topo.maxZoom
+                        }).addTo(courseMap);
+                        topoLayer.on('tileerror', function() {
+                            topoErrorCount++;
+                            if (topoErrorCount >= TOPO_ERROR_THRESHOLD) {
+                                fallbackToStreets();
+                            }
+                        });
+                        currentBasemapKey = 'topo';
+                        this.textContent = 'Topo';
+                        this.title = 'Current: Topo (click to switch)';
+                        hideMapBanner();
+                    }
                 });
                 return div;
             };
@@ -4960,7 +5093,9 @@ DASHBOARD_HTML = '''
         pollCameraStatus();
 
         // ============ Streaming Control ============
-        let streamingStatus = { status: 'idle', camera: 'chase' };
+        let streamingStatus = { status: 'idle', camera: 'main' };
+        // Track user's manual dropdown selection — preserved when idle
+        let userSelectedCamera = null;
 
         async function pollStreamingStatus() {
             // EDGE-PROG-3: Use Program State as authoritative source
@@ -5002,7 +5137,7 @@ DASHBOARD_HTML = '''
             if (streamingStatus.status === 'live' || streamingStatus.status === 'starting') {
                 startBtn.style.display = 'none';
                 stopBtn.style.display = 'inline-block';
-                cameraSelect.disabled = true;
+                cameraSelect.disabled = false;
                 infoDiv.style.display = 'block';
                 activeCamera.textContent = streamingStatus.camera || '--';
 
@@ -5050,21 +5185,34 @@ DASHBOARD_HTML = '''
                 }
             }
 
-            // Show error if any
+            // STREAM-1: Show error in prominent banner if any
             if (streamingStatus.error && streamingStatus.status === 'error') {
-                errorSpan.textContent = streamingStatus.error;
-                errorSpan.style.display = 'inline';
+                showStreamError(streamingStatus.error);
             } else if (sv && sv.last_error && (sv.state === 'paused' || sv.state === 'error')) {
                 // EDGE-6: Show supervisor error
-                errorSpan.textContent = sv.last_error.substring(0, 120);
-                errorSpan.style.display = 'inline';
+                showStreamError(sv.last_error.substring(0, 120));
             } else {
-                errorSpan.style.display = 'none';
+                hideStreamError();
             }
 
-            // Update camera select to match current
-            if (streamingStatus.camera) {
-                cameraSelect.value = streamingStatus.camera;
+            // Update camera select to match current streaming camera only when
+            // actively streaming. When idle, preserve the user's manual selection.
+            const switchBtn = document.getElementById('switchStreamBtn');
+            if (streamingStatus.status === 'live' || streamingStatus.status === 'starting') {
+                // Sync dropdown to the actual streaming camera
+                if (streamingStatus.camera) {
+                    cameraSelect.value = streamingStatus.camera;
+                }
+                // Show switch button when streaming and dropdown differs from active camera
+                if (switchBtn) {
+                    switchBtn.style.display = (cameraSelect.value !== streamingStatus.camera) ? 'inline-block' : 'none';
+                }
+            } else {
+                // Idle/error: restore user's previous selection if they made one
+                if (userSelectedCamera) {
+                    cameraSelect.value = userSelectedCamera;
+                }
+                if (switchBtn) switchBtn.style.display = 'none';
             }
 
             // LINK-3: Check YouTube configuration — show visible warning, not just tooltip
@@ -5090,15 +5238,94 @@ DASHBOARD_HTML = '''
             updateCameraDisplay();
         }
 
+        // STREAM-1/STREAM-2: Show streaming error banner with actionable guidance.
+        // Accepts errorMsg (string) and optional errorCode from structured API response.
+        function showStreamError(errorMsg, errorCode) {
+            const banner = document.getElementById('streamErrorBanner');
+            const msgEl = document.getElementById('streamErrorMsg');
+            const actionEl = document.getElementById('streamErrorAction');
+            const errorSpan = document.getElementById('streamError');
+            if (!banner) return;
+
+            msgEl.textContent = errorMsg;
+
+            // STREAM-2: Match on error_code first (structured), fall back to string matching
+            var action = '';
+            var code = (errorCode || '').toUpperCase();
+            if (code === 'MISSING_YOUTUBE_KEY') {
+                action = '<a href="#" data-click="switchToTab" data-arg="settings">Go to Settings</a> and enter your YouTube stream key.';
+            } else if (code === 'CAMERA_NOT_FOUND') {
+                action = '<a href="#" data-click="switchToTab" data-arg="devices">Go to Devices</a> and run a device scan. Check USB camera connections.';
+            } else if (code === 'FFMPEG_MISSING') {
+                action = 'Run on the edge host: <code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:4px;">sudo apt install -y ffmpeg</code>';
+            } else if (code === 'FFMPEG_EXITED') {
+                action = 'Check that the YouTube stream key is valid and the camera device has correct permissions.';
+            } else if (code === 'ALREADY_STREAMING') {
+                action = 'A stream is already running. Stop it first, then start a new one.';
+            } else {
+                // Fallback: string matching for legacy/unstructured errors
+                var errLower = errorMsg.toLowerCase();
+                if (errLower.includes('stream key') || errLower.includes('youtube')) {
+                    action = '<a href="#" data-click="switchToTab" data-arg="settings">Go to Settings</a> and enter your YouTube stream key.';
+                } else if (errLower.includes('camera') && errLower.includes('not found')) {
+                    action = '<a href="#" data-click="switchToTab" data-arg="devices">Go to Devices</a> and run a device scan. Check USB camera connections.';
+                } else if (errLower.includes('ffmpeg not installed')) {
+                    action = 'Run on the edge host: <code style="background:var(--bg-tertiary);padding:2px 6px;border-radius:4px;">sudo apt install -y ffmpeg</code>';
+                } else if (errLower.includes('ffmpeg') || errLower.includes('exited')) {
+                    action = 'Check that the YouTube stream key is valid and the camera device has correct permissions.';
+                } else if (errLower.includes('already streaming')) {
+                    action = 'A stream is already running. Stop it first, then start a new one.';
+                }
+            }
+            actionEl.innerHTML = action;
+
+            banner.style.display = 'block';
+
+            // Also update the inline error span for consistency
+            if (errorSpan) {
+                errorSpan.textContent = errorMsg;
+                errorSpan.style.display = 'inline';
+            }
+        }
+
+        function hideStreamError() {
+            var banner = document.getElementById('streamErrorBanner');
+            var errorSpan = document.getElementById('streamError');
+            if (banner) banner.style.display = 'none';
+            if (errorSpan) { errorSpan.style.display = 'none'; errorSpan.textContent = ''; }
+        }
+
+        // STREAM-1: Helper to switch tabs (used by actionable links in error banner)
+        function switchToTab(tabName) {
+            var tabBtn = document.querySelector('[data-tab="' + tabName + '"]');
+            if (tabBtn) tabBtn.click();
+        }
+
         async function startStream() {
             const camera = document.getElementById('streamCameraSelect').value;
             const startBtn = document.getElementById('startStreamBtn');
-            const errorSpan = document.getElementById('streamError');
 
             startBtn.disabled = true;
             startBtn.textContent = 'Starting...';
-            // LINK-3: Clear previous error
-            if (errorSpan) { errorSpan.style.display = 'none'; errorSpan.textContent = ''; }
+            hideStreamError();
+
+            // STREAM-1: Preflight gate — check streaming status before calling start
+            try {
+                const preResp = await fetch('/api/streaming/status');
+                if (preResp.ok) {
+                    const preData = await preResp.json();
+                    if (preData.youtube_configured === false) {
+                        showStreamError('No YouTube stream key configured. Set it in Settings.');
+                        showAlert('Stream key missing — configure in Settings', 'warning');
+                        startBtn.disabled = false;
+                        startBtn.textContent = 'Start Stream';
+                        return;
+                    }
+                }
+            } catch (e) {
+                // Preflight failed — continue to start and let backend validate
+                console.warn('STREAM-1: Preflight check failed, continuing:', e);
+            }
 
             try {
                 const resp = await fetch('/api/streaming/start', {
@@ -5109,22 +5336,15 @@ DASHBOARD_HTML = '''
                 const data = await resp.json();
 
                 if (!data.success) {
-                    showAlert('Stream failed: ' + data.error, 'warning');
-                    // LINK-3: Also persist error in the UI so it doesn't vanish after 3s
-                    if (errorSpan) {
-                        errorSpan.textContent = data.error;
-                        errorSpan.style.display = 'inline';
-                    }
+                    showStreamError(data.error || data.message || 'Unknown error', data.error_code);
+                    showAlert('Stream failed — see details below', 'error');
                 } else {
+                    hideStreamError();
                     showAlert('Stream started on ' + camera, 'success');
                 }
             } catch (e) {
-                showAlert('Failed to start stream: ' + e.message, 'warning');
-                // LINK-3: Persist network/fetch errors
-                if (errorSpan) {
-                    errorSpan.textContent = e.message;
-                    errorSpan.style.display = 'inline';
-                }
+                showStreamError('Network error: ' + e.message);
+                showAlert('Failed to start stream', 'error');
             }
 
             startBtn.disabled = false;
@@ -5157,29 +5377,60 @@ DASHBOARD_HTML = '''
         }
 
         async function handleCameraSelectChange(camera) {
-            // EDGE-PROG-3: Use Program State endpoint for camera switching
+            // Track the user's selection so polling doesn't overwrite it
+            userSelectedCamera = camera;
+
+            // Show/hide switch button when streaming and selection differs
+            const switchBtn = document.getElementById('switchStreamBtn');
             if (streamingStatus.status === 'live' || streamingStatus.status === 'starting') {
-                const select = document.getElementById('streamCameraSelect');
-                select.disabled = true;
-                try {
-                    const resp = await fetch('/api/program/switch', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ camera: camera })
-                    });
-                    const data = await resp.json();
-                    if (data.success) {
-                        showAlert('Switched to ' + camera, 'success');
-                    } else {
-                        showAlert('Switch failed: ' + (data.error || 'unknown'), 'warning');
-                    }
-                } catch (e) {
-                    showAlert('Failed to switch camera: ' + e.message, 'warning');
+                if (switchBtn) {
+                    switchBtn.style.display = (camera !== streamingStatus.camera) ? 'inline-block' : 'none';
                 }
-                select.disabled = false;
-                await pollStreamingStatus();
             }
-            // If idle, just update the selection (used when startStream is called)
+            // Don't auto-switch on dropdown change — user clicks Switch Camera button
+        }
+
+        async function switchStream() {
+            const camera = document.getElementById('streamCameraSelect').value;
+            const switchBtn = document.getElementById('switchStreamBtn');
+
+            if (!(streamingStatus.status === 'live' || streamingStatus.status === 'starting')) {
+                showAlert('Not currently streaming — use Start Stream instead', 'warning');
+                return;
+            }
+
+            if (camera === streamingStatus.camera) {
+                showAlert('Already streaming on ' + camera, 'success');
+                return;
+            }
+
+            switchBtn.disabled = true;
+            switchBtn.textContent = 'Switching...';
+            hideStreamError();
+
+            try {
+                const resp = await fetch('/api/streaming/switch-camera', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ camera: camera })
+                });
+                const data = await resp.json();
+                if (data.success) {
+                    hideStreamError();
+                    showAlert('Switched to ' + camera, 'success');
+                    userSelectedCamera = null; // Clear — now synced with server
+                } else {
+                    showStreamError(data.error || data.message || 'Switch failed', data.error_code);
+                    showAlert('Camera switch failed — see details below', 'error');
+                }
+            } catch (e) {
+                showStreamError('Network error: ' + e.message);
+                showAlert('Failed to switch camera', 'error');
+            }
+
+            switchBtn.disabled = false;
+            switchBtn.textContent = 'Switch Camera';
+            await pollStreamingStatus();
         }
 
         // Poll streaming status every 3 seconds
@@ -6205,7 +6456,8 @@ DASHBOARD_HTML = '''
                 // Map service key (e.g. 'gps', 'can', 'uplink') to DOM element ID suffix
                 const svcIdMap = {
                     'gps': 'Gps', 'can-setup': 'CanSetup', 'can': 'Can',
-                    'ant': 'Ant', 'uplink': 'Uplink', 'video': 'Video'
+                    'ant': 'Ant', 'uplink': 'Uplink', 'video': 'Video',
+                    'cloudflared': 'Cloudflared'
                 };
                 Object.entries(data.services).forEach(([name, info]) => {
                     const idSuffix = svcIdMap[name];
@@ -6235,6 +6487,17 @@ DASHBOARD_HTML = '''
                         if (detailEl) detailEl.textContent = '';
                     }
                 });
+                // Show tunnel URL as clickable link if configured
+                const cfInfo = data.services && data.services.cloudflared;
+                const tunnelRow = document.getElementById('tunnelUrlRow');
+                const tunnelLink = document.getElementById('tunnelUrlLink');
+                if (cfInfo && cfInfo.tunnel_url && tunnelRow && tunnelLink) {
+                    tunnelLink.href = cfInfo.tunnel_url;
+                    tunnelLink.textContent = cfInfo.tunnel_url;
+                    tunnelRow.style.display = 'block';
+                } else if (tunnelRow) {
+                    tunnelRow.style.display = 'none';
+                }
             }
         }
 
@@ -6710,6 +6973,20 @@ SETTINGS_HTML = '''
                     <input type="text" name="event_id" id="event_id" value="{event_id}" placeholder="evt_xxxxxxxx">
                 </div>
 
+                <div class="section-title">Cloudflare Tunnel</div>
+
+                <div class="form-group">
+                    <label for="cloudflare_tunnel_token">Tunnel Token</label>
+                    <input type="password" name="cloudflare_tunnel_token" id="cloudflare_tunnel_token" value="{cloudflare_tunnel_token}" placeholder="eyJhIjoi...">
+                    <div class="help-text">From Cloudflare Zero Trust &gt; Networks &gt; Tunnels.</div>
+                </div>
+
+                <div class="form-group">
+                    <label for="cloudflare_tunnel_url">Public Tunnel URL</label>
+                    <input type="url" name="cloudflare_tunnel_url" id="cloudflare_tunnel_url" value="{cloudflare_tunnel_url}" placeholder="https://pit-truck42.your-domain.com">
+                    <div class="help-text">The public HTTPS URL for CGNAT-proof external access.</div>
+                </div>
+
                 <div class="section-title">YouTube Live Streaming</div>
 
                 <div class="form-group">
@@ -7081,6 +7358,9 @@ SETUP_HTML = '''
         <div class="welcome">
             Welcome! This is the first-time setup for your pit crew dashboard.
             Create a password to protect access to telemetry data.
+            <br><br>
+            <strong>Starlink / CGNAT users:</strong> Cloudflare Tunnel is required for remote access.
+            Without it, the dashboard is only reachable on the local network.
         </div>
 
         {error}
@@ -7128,6 +7408,26 @@ SETUP_HTML = '''
                 <div class="help-text">Current race event ID.</div>
             </div>
 
+            <div class="section-title">Cloudflare Tunnel (Required)</div>
+            <div style="background: rgba(245, 158, 11, 0.1); border: 1px solid rgba(245, 158, 11, 0.3); border-radius: 8px; padding: 10px 14px; margin-bottom: 15px; font-size: 0.8rem; color: #fcd34d;">
+                Starlink and cellular connections use CGNAT, which blocks inbound connections.
+                A Cloudflare Tunnel creates a secure outbound-only link so the cloud and pit crew
+                can reach this dashboard from anywhere.
+            </div>
+
+            <div class="form-group">
+                <label for="cloudflare_tunnel_token">Tunnel Token *</label>
+                <input type="password" name="cloudflare_tunnel_token" id="cloudflare_tunnel_token" placeholder="eyJhIjoi..." required>
+                <div class="help-text">From Cloudflare Zero Trust &gt; Networks &gt; Tunnels. Run <code>cloudflared tunnel create</code> or copy from the Zero Trust dashboard.</div>
+            </div>
+
+            <div class="form-group">
+                <label for="cloudflare_tunnel_url">Public Tunnel URL *</label>
+                <input type="url" name="cloudflare_tunnel_url" id="cloudflare_tunnel_url" placeholder="https://pit-truck42.your-domain.com" required>
+                <div class="help-text">The public HTTPS hostname configured in your tunnel. This is how the cloud server and remote pit crew will reach this device.</div>
+                <div class="error-text" id="cfUrlError">Must be a valid https:// URL</div>
+            </div>
+
             <div class="section-title">YouTube Live Streaming (Optional)</div>
 
             <div class="form-group">
@@ -7159,9 +7459,31 @@ SETUP_HTML = '''
                 confirmInput.focus();
                 return false;
             }
-
             errorEl.style.display = 'none';
             confirmInput.classList.remove('error');
+
+            // Validate Cloudflare Tunnel fields
+            const cfToken = document.getElementById('cloudflare_tunnel_token').value.trim();
+            const cfUrl = document.getElementById('cloudflare_tunnel_url').value.trim();
+            const cfUrlError = document.getElementById('cfUrlError');
+            const cfUrlInput = document.getElementById('cloudflare_tunnel_url');
+
+            if (!cfToken) {
+                document.getElementById('cloudflare_tunnel_token').classList.add('error');
+                document.getElementById('cloudflare_tunnel_token').focus();
+                return false;
+            }
+            document.getElementById('cloudflare_tunnel_token').classList.remove('error');
+
+            if (!cfUrl || !cfUrl.startsWith('https://')) {
+                cfUrlError.style.display = 'block';
+                cfUrlInput.classList.add('error');
+                cfUrlInput.focus();
+                return false;
+            }
+            cfUrlError.style.display = 'none';
+            cfUrlInput.classList.remove('error');
+
             return true;
         }
 
@@ -7169,6 +7491,13 @@ SETUP_HTML = '''
         document.getElementById('password_confirm').addEventListener('input', function() {
             this.classList.remove('error');
             document.getElementById('passwordError').style.display = 'none';
+        });
+        document.getElementById('cloudflare_tunnel_url').addEventListener('input', function() {
+            this.classList.remove('error');
+            document.getElementById('cfUrlError').style.display = 'none';
+        });
+        document.getElementById('cloudflare_tunnel_token').addEventListener('input', function() {
+            this.classList.remove('error');
         });
     </script>
 </body>
@@ -7284,7 +7613,7 @@ class PitCrewDashboard:
         # ADDED: Streaming state management
         self._streaming_state: Dict[str, Any] = {
             'status': 'idle',  # 'idle', 'starting', 'live', 'error', 'stopping'
-            'camera': 'chase',  # Active camera
+            'camera': 'main',  # Active camera
             'started_at': None,  # Timestamp when streaming started
             'error': None,  # Last error message
             'pid': None,  # FFmpeg process ID
@@ -7321,7 +7650,7 @@ class PitCrewDashboard:
 
         # EDGE-PROG-3: Program State - single authoritative source for Pit Crew UI & Cloud sync
         self._program_state: Dict[str, Any] = {
-            'active_camera': 'chase',          # Currently active camera feed
+            'active_camera': 'main',          # Currently active camera feed
             'streaming': False,                # Is stream currently live?
             'stream_destination': None,        # YouTube live URL or None
             'last_switch_at': None,            # Timestamp (ms) of last camera switch
@@ -7812,24 +8141,48 @@ class PitCrewDashboard:
         profile = get_profile(self._stream_profile)
         return build_ffmpeg_cmd(camera_device, stream_key, profile)
 
-    async def start_streaming(self, camera: str = "chase") -> Dict[str, Any]:
-        """Start FFmpeg streaming to YouTube."""
+    async def start_streaming(self, camera: str = "main") -> Dict[str, Any]:
+        """Start FFmpeg streaming to YouTube.
+
+        STREAM-2: Returns structured error responses with error_code, message,
+        and a status_code hint for the handler. The 'error' field is preserved
+        for backward compatibility with the JS UI.
+        """
         # Check if already streaming
         if self._ffmpeg_process and self._ffmpeg_process.poll() is None:
-            return {"success": False, "error": "Already streaming"}
+            return {
+                "success": False,
+                "error_code": "ALREADY_STREAMING",
+                "message": "Already streaming.",
+                "error": "Already streaming",
+                "status_code": 409,
+            }
 
         # Check for YouTube stream key
         if not self.config.youtube_stream_key:
             self._streaming_state['status'] = 'error'
             self._streaming_state['error'] = 'No YouTube stream key configured'
-            return {"success": False, "error": "No YouTube stream key configured. Set it in Settings."}
+            return {
+                "success": False,
+                "error_code": "MISSING_YOUTUBE_KEY",
+                "message": "Configure YouTube stream key in Settings.",
+                "error": "No YouTube stream key configured. Set it in Settings.",
+                "status_code": 400,
+            }
 
         # Get camera device
         device = self._get_camera_device(camera)
         if not device:
             self._streaming_state['status'] = 'error'
             self._streaming_state['error'] = f'Camera {camera} not found'
-            return {"success": False, "error": f"Camera '{camera}' not found at {self._camera_devices.get(camera, 'unknown')}"}
+            device_path = self._camera_devices.get(camera, 'unknown')
+            return {
+                "success": False,
+                "error_code": "CAMERA_NOT_FOUND",
+                "message": f"Camera '{camera}' not found at {device_path}",
+                "error": f"Camera '{camera}' not found at {device_path}",
+                "status_code": 400,
+            }
 
         # Update state
         self._streaming_state['status'] = 'starting'
@@ -7872,21 +8225,42 @@ class PitCrewDashboard:
                 return {"success": True, "status": "live", "camera": camera, "pid": self._ffmpeg_process.pid}
             else:
                 # Process exited immediately
-                stderr = self._ffmpeg_process.stderr.read().decode() if self._ffmpeg_process.stderr else ""
+                stderr_text = self._ffmpeg_process.stderr.read().decode() if self._ffmpeg_process.stderr else ""
+                err_msg = stderr_text[-500:] if stderr_text else "FFmpeg exited immediately"
                 self._streaming_state['status'] = 'error'
-                self._streaming_state['error'] = stderr[-500:] if stderr else "FFmpeg exited immediately"
-                logger.error(f"FFmpeg failed to start: {stderr[-500:]}")
-                return {"success": False, "error": self._streaming_state['error']}
+                self._streaming_state['error'] = err_msg
+                logger.error(f"FFmpeg failed to start: {err_msg}")
+                return {
+                    "success": False,
+                    "error_code": "FFMPEG_EXITED",
+                    "message": "FFmpeg exited immediately",
+                    "error": err_msg,
+                    "stderr": err_msg,
+                    "status_code": 500,
+                }
 
         except FileNotFoundError:
             self._streaming_state['status'] = 'error'
             self._streaming_state['error'] = 'FFmpeg not installed'
-            return {"success": False, "error": "FFmpeg not installed. Run: sudo apt install ffmpeg"}
+            return {
+                "success": False,
+                "error_code": "FFMPEG_MISSING",
+                "message": "FFmpeg not installed",
+                "error": "FFmpeg not installed. Run: sudo apt install ffmpeg",
+                "fix": "sudo apt install -y ffmpeg",
+                "status_code": 500,
+            }
         except Exception as e:
             self._streaming_state['status'] = 'error'
             self._streaming_state['error'] = str(e)
             logger.error(f"Failed to start streaming: {e}")
-            return {"success": False, "error": str(e)}
+            return {
+                "success": False,
+                "error_code": "EXCEPTION",
+                "message": str(e),
+                "error": str(e),
+                "status_code": 500,
+            }
 
     async def stop_streaming(self) -> Dict[str, Any]:
         """Stop FFmpeg streaming."""
@@ -8259,7 +8633,7 @@ class PitCrewDashboard:
 
         # Restart stream if live
         if self._streaming_state.get("status") == "live":
-            camera = self._streaming_state.get("camera", "chase")
+            camera = self._streaming_state.get("camera", "main")
             await self.stop_streaming()
             await asyncio.sleep(1)
             await self.start_streaming(camera)
@@ -8402,15 +8776,20 @@ class PitCrewDashboard:
         # Inject nonce into all script tags
         html = html.replace('__CSP_NONCE__', nonce)
 
+        # Show/hide tunnel warning banner based on config
+        tunnel_display = 'none' if self.config.cloudflare_tunnel_url else 'block'
+        html = html.replace('__TUNNEL_BANNER_DISPLAY__', tunnel_display)
+
         # EDGE-CLOUD-2: Set Content-Security-Policy header
+        # EDGE-MAP-0: Added tile provider domains to img-src and connect-src
         csp = (
             f"default-src 'self'; "
             f"script-src 'nonce-{nonce}' https://cdn.jsdelivr.net https://unpkg.com; "
             f"style-src 'self' 'unsafe-inline' https://unpkg.com; "
-            f"img-src 'self' data:; "
-            f"connect-src 'self'; "
+            f"img-src 'self' data: https://*.tile.opentopomap.org https://*.basemaps.cartocdn.com https://*.tile.openstreetmap.org; "
+            f"connect-src 'self' https://*.tile.opentopomap.org https://*.basemaps.cartocdn.com https://*.tile.openstreetmap.org; "
             f"font-src 'self'; "
-            f"frame-src 'none'; "
+            f"frame-src https://www.youtube.com https://www.youtube-nocookie.com; "
             f"object-src 'none'"
         )
         response = web.Response(text=html, content_type='text/html')
@@ -8452,6 +8831,25 @@ class PitCrewDashboard:
             )
             return web.Response(text=html, content_type='text/html', status=400)
 
+        # Validate Cloudflare Tunnel fields (required for CGNAT-proof access)
+        cf_token = data.get('cloudflare_tunnel_token', '').strip()
+        cf_url = data.get('cloudflare_tunnel_url', '').strip()
+
+        if not cf_token:
+            html = SETUP_HTML.replace(
+                '{error}',
+                '<div class="server-error">Cloudflare Tunnel Token is required. '
+                'Create a tunnel at Cloudflare Zero Trust &gt; Networks &gt; Tunnels.</div>'
+            )
+            return web.Response(text=html, content_type='text/html', status=400)
+
+        if not cf_url or not cf_url.startswith('https://'):
+            html = SETUP_HTML.replace(
+                '{error}',
+                '<div class="server-error">Cloudflare Tunnel URL is required and must start with https://.</div>'
+            )
+            return web.Response(text=html, content_type='text/html', status=400)
+
         # Save configuration
         self.config.set_password(password)
         self.config.vehicle_number = data.get('vehicle_number', '').strip() or '000'
@@ -8464,10 +8862,16 @@ class PitCrewDashboard:
         self.config.event_id = data.get('event_id', '').strip()
         self.config.youtube_stream_key = data.get('youtube_stream_key', '').strip()
         self.config.youtube_live_url = data.get('youtube_live_url', '').strip()
+        self.config.cloudflare_tunnel_token = cf_token
+        self.config.cloudflare_tunnel_url = cf_url.rstrip('/')
 
         try:
             self.config.save()
             logger.info("Setup completed successfully")
+            # Sync credentials to /etc/argus/config.env for systemd services
+            self._write_systemd_env()
+            # Write /etc/cloudflared/config.yml and start tunnel if token is set
+            self._activate_cloudflare_tunnel()
             # LINK-1: Restart cloud status loop to pick up new cloud_url/truck_token
             self._restart_cloud_status_loop()
         except Exception as e:
@@ -8533,6 +8937,8 @@ class PitCrewDashboard:
         html = html.replace('{event_id}', self.config.event_id or '')
         html = html.replace('{youtube_stream_key}', self.config.youtube_stream_key or '')
         html = html.replace('{youtube_live_url}', self.config.youtube_live_url or '')
+        html = html.replace('{cloudflare_tunnel_token}', self.config.cloudflare_tunnel_token or '')
+        html = html.replace('{cloudflare_tunnel_url}', self.config.cloudflare_tunnel_url or '')
         return web.Response(text=html, content_type='text/html')
 
     async def handle_settings(self, request: web.Request) -> web.Response:
@@ -8555,10 +8961,17 @@ class PitCrewDashboard:
         self.config.event_id = data.get('event_id', '').strip()
         self.config.youtube_stream_key = data.get('youtube_stream_key', '').strip()
         self.config.youtube_live_url = data.get('youtube_live_url', '').strip()
+        self.config.cloudflare_tunnel_token = data.get('cloudflare_tunnel_token', '').strip()
+        cf_url = data.get('cloudflare_tunnel_url', '').strip()
+        self.config.cloudflare_tunnel_url = cf_url.rstrip('/')
 
         try:
             self.config.save()
             logger.info("Settings updated successfully")
+            # Sync credentials to /etc/argus/config.env for systemd services
+            self._write_systemd_env()
+            # Write /etc/cloudflared/config.yml and restart tunnel if token changed
+            self._activate_cloudflare_tunnel()
             # LINK-1: Restart cloud status loop to pick up new cloud_url/truck_token
             self._restart_cloud_status_loop()
             message = '<div class="success">Settings saved successfully!</div>'
@@ -8573,6 +8986,8 @@ class PitCrewDashboard:
         html = html.replace('{event_id}', self.config.event_id or '')
         html = html.replace('{youtube_stream_key}', self.config.youtube_stream_key or '')
         html = html.replace('{youtube_live_url}', self.config.youtube_live_url or '')
+        html = html.replace('{cloudflare_tunnel_token}', self.config.cloudflare_tunnel_token or '')
+        html = html.replace('{cloudflare_tunnel_url}', self.config.cloudflare_tunnel_url or '')
         return web.Response(text=html, content_type='text/html')
 
     # ============ TEAM-3: Fan Visibility & Telemetry Sharing Handlers ============
@@ -8741,7 +9156,7 @@ class PitCrewDashboard:
                     f"{self.config.cloud_url}/api/v1/team/video",
                     headers={"Authorization": f"Bearer {access_token}"},
                     json={
-                        "camera_name": "chase",  # Default camera
+                        "camera_name": "main",  # Default camera
                         "youtube_url": self.config.youtube_live_url,
                         "permission_level": "public",
                     }
@@ -8930,12 +9345,18 @@ class PitCrewDashboard:
 
         try:
             data = await request.json()
-            camera = data.get('camera', 'chase')
-        except:
-            camera = 'chase'
+            camera = data.get('camera', 'main')
+        except Exception:
+            camera = 'main'
 
         result = await self.start_streaming(camera)
-        status_code = 200 if result.get('success') else 400
+        # STREAM-2: Use structured status_code from result, default to 200/400
+        if result.get('success'):
+            status_code = 200
+        else:
+            status_code = result.pop('status_code', 400)
+        # STREAM-2: Log every request with outcome
+        logger.info(f"POST /api/streaming/start camera={camera} status={status_code} error_code={result.get('error_code', 'none')}")
         return web.json_response(result, status=status_code)
 
     async def handle_streaming_stop(self, request: web.Request) -> web.Response:
@@ -9269,22 +9690,23 @@ class PitCrewDashboard:
 
         fuel_set = self._fuel_strategy.get('fuel_set', False)
         current_fuel = self._fuel_strategy.get('current_fuel_gal')
-        # PIT-FUEL-1: Use constant for fallback (single source of truth)
-        tank_capacity = self._fuel_strategy.get('tank_capacity_gal', DEFAULT_TANK_CAPACITY_GAL)
-        consumption_rate = self._fuel_strategy.get('consumption_rate_mpg', 2.0)
+        # TEL-DEFAULTS: Return None when unset (not a hardcoded default)
+        tank_capacity = self._fuel_strategy.get('tank_capacity_gal')
+        consumption_rate = self._fuel_strategy.get('consumption_rate_mpg')
 
-        # Calculate estimated miles remaining (only if fuel is set)
+        # Calculate estimated miles remaining (only if fuel AND both config values are set)
         estimated_miles = None
         fuel_percent = None
-        if fuel_set and current_fuel is not None and consumption_rate > 0:
+        if fuel_set and current_fuel is not None and consumption_rate is not None and consumption_rate > 0:
             estimated_miles = round(current_fuel * consumption_rate, 1)
-            fuel_percent = round((current_fuel / tank_capacity) * 100, 1) if tank_capacity > 0 else 0
+        if fuel_set and current_fuel is not None and tank_capacity is not None and tank_capacity > 0:
+            fuel_percent = round((current_fuel / tank_capacity) * 100, 1)
 
         # PIT-FUEL-2: Trip miles and range (remaining_range subtracts miles traveled)
         trip_miles = round(self._trip_state.get('trip_miles', 0.0), 1)
         trip_start_at = self._trip_state.get('trip_start_at', 0)
         range_miles_remaining = None
-        if fuel_set and current_fuel is not None and consumption_rate > 0:
+        if fuel_set and current_fuel is not None and consumption_rate is not None and consumption_rate > 0:
             estimated_range = current_fuel * consumption_rate
             range_miles_remaining = round(max(0, estimated_range - trip_miles), 1)
 
@@ -9609,7 +10031,7 @@ class PitCrewDashboard:
             #   details: optional hint
             # Combines systemd state + device presence + config to give
             # actionable information instead of raw systemd strings.
-            svc_names = ['argus-gps', 'argus-can-setup', 'argus-can', 'argus-ant', 'argus-uplink', 'argus-video']
+            svc_names = ['argus-gps', 'argus-can-setup', 'argus-can', 'argus-ant', 'argus-uplink', 'argus-video', 'argus-cloudflared']
             systemd_states = {}
             for svc in svc_names:
                 try:
@@ -9819,6 +10241,41 @@ class PitCrewDashboard:
             else:
                 result['services']['video'] = {
                     'state': 'UNKNOWN', 'label': video_sd, 'details': ''
+                }
+
+            # --- argus-cloudflared (Cloudflare Tunnel) ---
+            cf_sd = systemd_states.get('argus-cloudflared', 'unknown')
+            tunnel_url = self.config.cloudflare_tunnel_url or ''
+            if cf_sd == 'active':
+                result['services']['cloudflared'] = {
+                    'state': 'OK', 'label': 'Connected',
+                    'details': tunnel_url or 'Tunnel running',
+                    'tunnel_url': tunnel_url,
+                }
+            elif cf_sd == 'inactive':
+                if self.config.cloudflare_tunnel_token:
+                    result['services']['cloudflared'] = {
+                        'state': 'WARN', 'label': 'Not running',
+                        'details': 'Token configured but service not started',
+                        'tunnel_url': tunnel_url,
+                    }
+                else:
+                    result['services']['cloudflared'] = {
+                        'state': 'OFF', 'label': 'Not configured',
+                        'details': 'Set Tunnel Token in Settings',
+                        'tunnel_url': '',
+                    }
+            elif cf_sd == 'failed':
+                detail = 'Restart limit hit' if _is_rate_limited('argus-cloudflared') else 'Service crashed'
+                result['services']['cloudflared'] = {
+                    'state': 'ERROR', 'label': 'Error',
+                    'details': detail,
+                    'tunnel_url': tunnel_url,
+                }
+            else:
+                result['services']['cloudflared'] = {
+                    'state': 'UNKNOWN', 'label': cf_sd, 'details': '',
+                    'tunnel_url': tunnel_url,
                 }
 
         except Exception as e:
@@ -10366,10 +10823,11 @@ class PitCrewDashboard:
                     payload = json.loads(msg[-1].decode())
 
                     # Update telemetry state - Core engine data
+                    # TEL-DEFAULTS: Reset to None when CAN key absent (no stale retention)
                     self.telemetry.rpm = payload.get('rpm', self.telemetry.rpm)
-                    self.telemetry.coolant_temp = payload.get('coolant_temp', self.telemetry.coolant_temp)
-                    self.telemetry.oil_pressure = payload.get('oil_pressure', self.telemetry.oil_pressure)
-                    self.telemetry.oil_temp = payload.get('oil_temp', self.telemetry.oil_temp)  # ADDED
+                    self.telemetry.coolant_temp = payload.get('coolant_temp')
+                    self.telemetry.oil_pressure = payload.get('oil_pressure')
+                    self.telemetry.oil_temp = payload.get('oil_temp')
                     self.telemetry.fuel_pressure = payload.get('fuel_pressure', self.telemetry.fuel_pressure)
                     self.telemetry.throttle_pct = payload.get('throttle_pct', self.telemetry.throttle_pct)
                     self.telemetry.engine_load = payload.get('engine_load', self.telemetry.engine_load)
@@ -10505,6 +10963,8 @@ class PitCrewDashboard:
         import math
         import random
         t = 0
+        # TEL-DEFAULTS: Only simulate CAN-like telemetry when explicitly opted in
+        simulate_telemetry = os.environ.get('ARGUS_SIMULATE_TELEMETRY', '').lower() in ('1', 'true', 'yes')
 
         while self._running:
             await asyncio.sleep(0.05)
@@ -10513,15 +10973,16 @@ class PitCrewDashboard:
             # Engine telemetry
             self.telemetry.rpm = 3500 + math.sin(t * 0.5) * 1500 + random.gauss(0, 50)
             self.telemetry.throttle_pct = 50 + math.sin(t * 0.7) * 40
-            self.telemetry.coolant_temp = 90 + math.sin(t * 0.1) * 10
-            self.telemetry.oil_pressure = 45 + math.sin(t * 0.2) * 10
-            self.telemetry.oil_temp = 95 + math.sin(t * 0.08) * 8  # ADDED
+            if simulate_telemetry:
+                self.telemetry.coolant_temp = 90 + math.sin(t * 0.1) * 10
+                self.telemetry.oil_pressure = 45 + math.sin(t * 0.2) * 10
+                self.telemetry.oil_temp = 95 + math.sin(t * 0.08) * 8
             self.telemetry.fuel_pressure = 350 + random.gauss(0, 10)
             self.telemetry.engine_load = 50 + math.sin(t * 0.6) * 30 + random.gauss(0, 5)
-            self.telemetry.intake_air_temp = 35 + math.sin(t * 0.15) * 10  # ADDED: IAT in °C
-            self.telemetry.boost_pressure = max(0, 8 + math.sin(t * 0.5) * 6)  # ADDED: Boost PSI
-            self.telemetry.battery_voltage = 13.8 + math.sin(t * 0.3) * 0.5  # ADDED
-            self.telemetry.fuel_level_pct = max(10, 75 - t * 0.1)  # ADDED: Slowly decreasing
+            self.telemetry.intake_air_temp = 35 + math.sin(t * 0.15) * 10  # IAT in °C
+            self.telemetry.boost_pressure = max(0, 8 + math.sin(t * 0.5) * 6)  # Boost PSI
+            self.telemetry.battery_voltage = 13.8 + math.sin(t * 0.3) * 0.5
+            self.telemetry.fuel_level_pct = max(10, 75 - t * 0.1)  # Slowly decreasing
 
             # Vehicle telemetry
             self.telemetry.speed_mps = (80 + math.sin(t * 0.3) * 30) / 3.6
@@ -10692,6 +11153,127 @@ class PitCrewDashboard:
         self._cloud_status_task = asyncio.ensure_future(self._cloud_status_loop())
         logger.info("LINK-1: Cloud status loop restarted after settings change")
 
+    def _write_systemd_env(self):
+        """Write /etc/argus/config.env so systemd services (uplink, GPS, CAN, etc.) can start.
+
+        The pit crew dashboard saves its own config to pit_dashboard.json,
+        but systemd services read credentials from /etc/argus/config.env via
+        EnvironmentFile=. This method syncs the two after setup or settings save.
+
+        Only writes if cloud_url and truck_token are non-empty.
+        Failures are logged but do not block the UI.
+        """
+        env_path = "/etc/argus/config.env"
+        if not self.config.cloud_url or not self.config.truck_token:
+            logger.info("Skipping config.env write — cloud_url or truck_token empty")
+            return
+
+        vehicle_number = self.config.vehicle_number or "000"
+        content = (
+            "# Argus Edge Configuration\n"
+            "# Auto-generated by pit crew dashboard\n"
+            "\n"
+            "# Vehicle Identity\n"
+            f"ARGUS_VEHICLE_NUMBER={vehicle_number}\n"
+            f"ARGUS_VEHICLE_ID=truck_{vehicle_number}\n"
+            "\n"
+            "# Cloud Server\n"
+            f"ARGUS_CLOUD_URL={self.config.cloud_url}\n"
+            f"ARGUS_TRUCK_TOKEN={self.config.truck_token}\n"
+            "\n"
+            "# Hardware (auto-detected)\n"
+            "ARGUS_GPS_DEVICE=/dev/argus_gps\n"
+            "ARGUS_CAN_INTERFACE=can0\n"
+            "ARGUS_CAN_BITRATE=500000\n"
+            "\n"
+            "# Performance\n"
+            "ARGUS_GPS_HZ=10\n"
+            "ARGUS_TELEMETRY_HZ=10\n"
+            "ARGUS_UPLOAD_BATCH_SIZE=50\n"
+            "\n"
+            "# Logging\n"
+            "ARGUS_LOG_LEVEL=INFO\n"
+        )
+
+        try:
+            os.makedirs(os.path.dirname(env_path), exist_ok=True)
+            with open(env_path, 'w') as f:
+                f.write(content)
+            os.chmod(env_path, 0o600)
+            logger.info(f"Systemd env written to {env_path}")
+        except Exception as e:
+            logger.error(f"Failed to write {env_path}: {e}")
+
+    def _activate_cloudflare_tunnel(self):
+        """Write /etc/cloudflared/config.yml and start argus-cloudflared service.
+
+        Called after setup or settings save when cloudflare_tunnel_token is set.
+        Uses sudo to write the config file and manage the systemd service.
+        Failures are logged but do not block the UI.
+
+        The config.yml stores the token so the systemd service can read it.
+        cloudflared reads `tunnel: <token>` from config.yml when using
+        `cloudflared --config /etc/cloudflared/config.yml tunnel run`.
+        """
+        token = self.config.cloudflare_tunnel_token
+        if not token:
+            logger.info("Skipping cloudflared activation — no tunnel token configured")
+            return
+
+        # cloudflared config.yml — `tunnel` key holds the JWT token for
+        # token-based tunnel auth (cloudflared tunnel run reads this)
+        config_yml = (
+            "# Auto-generated by Argus Pit Crew Dashboard\n"
+            "# Do not edit — changes will be overwritten on next setup save.\n"
+            f"tunnel: {token}\n"
+            "no-autoupdate: true\n"
+        )
+
+        try:
+            # Create config directory
+            subprocess.run(
+                ['sudo', '-n', 'mkdir', '-p', '/etc/cloudflared'],
+                capture_output=True, timeout=5
+            )
+            # Write config file via sudo tee
+            result = subprocess.run(
+                ['sudo', '-n', 'tee', '/etc/cloudflared/config.yml'],
+                input=config_yml, capture_output=True, text=True, timeout=5
+            )
+            if result.returncode != 0:
+                logger.error(f"Failed to write cloudflared config: {result.stderr}")
+                return
+
+            logger.info("Cloudflare Tunnel config written to /etc/cloudflared/config.yml")
+
+            # Reload systemd and enable+start the tunnel service
+            subprocess.run(
+                ['sudo', '-n', 'systemctl', 'daemon-reload'],
+                capture_output=True, timeout=10
+            )
+            subprocess.run(
+                ['sudo', '-n', 'systemctl', 'enable', 'argus-cloudflared'],
+                capture_output=True, timeout=10
+            )
+            start_result = subprocess.run(
+                ['sudo', '-n', 'systemctl', 'restart', 'argus-cloudflared'],
+                capture_output=True, text=True, timeout=30
+            )
+            if start_result.returncode != 0:
+                logger.error(f"cloudflared service failed to start: {start_result.stderr}")
+                # Check journal for details
+                journal = subprocess.run(
+                    ['sudo', '-n', 'journalctl', '-u', 'argus-cloudflared', '-n', '20', '--no-pager'],
+                    capture_output=True, text=True, timeout=10
+                )
+                logger.error(f"cloudflared journal:\n{journal.stdout}")
+            else:
+                logger.info("argus-cloudflared service started successfully")
+        except subprocess.TimeoutExpired:
+            logger.error("Cloudflare Tunnel activation timed out")
+        except Exception as e:
+            logger.error(f"Failed to activate Cloudflare Tunnel: {e}")
+
     def _compute_competitors(self, entries: list, my_idx: int):
         """PROGRESS-3: Compute closest competitor ahead and behind from leaderboard entries."""
         my_entry = entries[my_idx]
@@ -10752,9 +11334,14 @@ class PitCrewDashboard:
             try:
                 # CLOUD-MANAGE-0: Include edge_url in simple heartbeat body
                 # so Team Dashboard can auto-discover edge before event_id is known
+                # Prefer Cloudflare Tunnel URL (CGNAT-proof) over LAN IP
                 lan_ip = _detect_lan_ip()
+                if self.config.cloudflare_tunnel_url:
+                    edge_url_simple = self.config.cloudflare_tunnel_url
+                else:
+                    edge_url_simple = f"http://{lan_ip}:{self.config.port}"
                 simple_payload = {
-                    "edge_url": f"http://{lan_ip}:{self.config.port}",
+                    "edge_url": edge_url_simple,
                     "capabilities": ["pit_crew_dashboard", "telemetry", "cameras"],
                 }
                 response = await client.post(
@@ -10804,9 +11391,12 @@ class PitCrewDashboard:
                 # Get streaming status
                 streaming = self.get_streaming_status()
 
-                # EDGE-URL-1: Build edge URL from detected LAN IP + configured port
-                lan_ip = _detect_lan_ip()
-                edge_url = f"http://{lan_ip}:{self.config.port}"
+                # EDGE-URL-1: Prefer Cloudflare Tunnel URL (CGNAT-proof), fall back to LAN
+                if self.config.cloudflare_tunnel_url:
+                    edge_url = self.config.cloudflare_tunnel_url
+                else:
+                    lan_ip = _detect_lan_ip()
+                    edge_url = f"http://{lan_ip}:{self.config.port}"
 
                 # Build detailed payload
                 payload = {
@@ -11001,7 +11591,7 @@ class PitCrewDashboard:
 
             elif command == "start_stream":
                 # PROD-3: Use persisted desired camera if no camera specified
-                camera = params.get("camera", self._streaming_state.get("camera", "chase"))
+                camera = params.get("camera", self._streaming_state.get("camera", "main"))
                 logger.info(f"[stream-start] Starting stream on camera={camera}")
                 result = await self.start_streaming(camera)
                 if result.get("success"):

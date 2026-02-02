@@ -112,7 +112,7 @@ confirm_uninstall() {
 stop_services() {
     log_info "Stopping Argus services..."
 
-    local services=("argus-uplink" "argus-gps" "argus-can" "argus-ant" "argus-video")
+    local services=("argus-uplink" "argus-gps" "argus-can" "argus-ant" "argus-video" "argus-cloudflared")
 
     for service in "${services[@]}"; do
         if systemctl is-active --quiet "$service" 2>/dev/null; then
@@ -125,7 +125,7 @@ stop_services() {
 disable_services() {
     log_info "Disabling Argus services..."
 
-    local services=("argus-uplink" "argus-gps" "argus-can" "argus-ant" "argus-video")
+    local services=("argus-uplink" "argus-gps" "argus-can" "argus-ant" "argus-video" "argus-cloudflared")
 
     for service in "${services[@]}"; do
         if systemctl is-enabled --quiet "$service" 2>/dev/null; then
@@ -144,6 +144,7 @@ remove_service_files() {
         "/etc/systemd/system/argus-can.service"
         "/etc/systemd/system/argus-ant.service"
         "/etc/systemd/system/argus-video.service"
+        "/etc/systemd/system/argus-cloudflared.service"
     )
 
     for file in "${service_files[@]}"; do
@@ -188,6 +189,12 @@ remove_config() {
 
     if [ -d "/etc/argus" ]; then
         rmdir /etc/argus 2>/dev/null || log_warn "/etc/argus not empty, keeping"
+    fi
+
+    # Remove Cloudflare Tunnel config
+    if [ -d "/etc/cloudflared" ]; then
+        rm -rf /etc/cloudflared
+        log_success "Removed /etc/cloudflared"
     fi
 }
 
